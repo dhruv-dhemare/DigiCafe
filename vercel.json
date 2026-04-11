@@ -3,7 +3,9 @@
   "buildCommand": "cd client && npm install && npm run build",
   "outputDirectory": "client/dist",
   "env": {
-    "VITE_BACKEND_URL": "@VITE_BACKEND_URL"
+    "VITE_BACKEND_URL": {
+      "required": false
+    }
   },
   "rewrites": [
     {
