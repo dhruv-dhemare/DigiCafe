@@ -3,12 +3,21 @@ import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, 
 import Logo from '../components/Logo'
 import '../styles/room.css'
 import ws from '../services/websocket'
+import rtcPeer from '../services/rtcPeer'
 
-export default function RoomLayout({ roomCode, onLeaveRoom }) {
+export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRoom }) {
   const [activeTab, setActiveTab] = useState('chat')
   const [connectionStatus, setConnectionStatus] = useState('Connecting...')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isCopied, setIsCopied] = useState(false)
+  const [localStream, setLocalStream] = useState(null)
+  const [remoteStream, setRemoteStream] = useState(null)
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false)
+  const [isAudioEnabled, setIsAudioEnabled] = useState(false)
+  const [dataChannelStatus, setDataChannelStatus] = useState('closed')
+  
+  // Track if we've already sent the create/join message to avoid duplicates
+  const hasInitialized = useRef(false)
 
   // Connect to WebSocket on mount
   useEffect(() => {
@@ -17,23 +26,111 @@ export default function RoomLayout({ roomCode, onLeaveRoom }) {
         setConnectionStatus('Connecting...')
         await ws.connect()
         
-        // Join room after connection
-        ws.send('join', { roomId: roomCode })
+        // Create room if we're the creator, otherwise join (only once)
+        if (!hasInitialized.current) {
+          hasInitialized.current = true
+          
+          if (isCreator) {
+            console.log('🏠 Creating room...')
+            ws.send('create', {})
+          } else if (roomCode) {
+            console.log('👥 Joining room:', roomCode)
+            ws.send('join', { roomId: roomCode })
+          }
+        }
         
         // Update status when connected
         ws.on('connected', () => {
           setConnectionStatus('Connected')
         })
         
-        // Handle join confirmation
+        // Handle room creation
+        ws.on('room_created', (data) => {
+          console.log('🏠 Room created:', data.roomId)
+          setRoomCode(data.roomId)
+          setConnectionStatus('Connected (Waiting for peer...)')
+        })
+        
+        // Handle join confirmation - Initialize as responder while waiting for offer
         ws.on('join_confirmed', (data) => {
           console.log('✓ Joined room:', data.roomId)
-          setConnectionStatus('Connected')
+          console.log('👥 Initializing as responder, waiting for offer...')
+          setConnectionStatus('Connected (Waiting for offer...)')
+          rtcPeer.initializePeerConnection(false) // Initialize as responder now, before offer arrives
+        })
+        
+        // When peer joins: Initialize WebRTC as initiator
+        ws.on('peer_joined', (data) => {
+          console.log('👥 Peer joined, initializing WebRTC as initiator...')
+          setConnectionStatus('Negotiating...')
+          // Only initialize if not already done
+          if (!rtcPeer.peerConnection) {
+            rtcPeer.initializePeerConnection(true) // We initiate the offer
+          }
+        })
+        
+        // Handle incoming offer
+        ws.on('offer', (data) => {
+          console.log('📤 Received offer from peer')
+          rtcPeer.handleOffer(data.sdp)
+        })
+        
+        // Handle incoming answer
+        ws.on('answer', (data) => {
+          console.log('📥 Received answer from peer')
+          rtcPeer.handleAnswer(data.sdp)
+        })
+        
+        // Handle incoming ICE candidate
+        ws.on('ice_candidate', (data) => {
+          console.log('❄️ Received ICE candidate from peer')
+          rtcPeer.handleIceCandidate(data)
+        })
+        
+        // Handle peer connection state changes
+        rtcPeer.on('connected', () => {
+          setConnectionStatus('P2P Connected ✓')
+        })
+        
+        rtcPeer.on('connection_failed', () => {
+          setConnectionStatus('P2P Connection Failed')
+        })
+
+        // Handle remote stream
+        rtcPeer.on('remote_stream', (stream) => {
+          console.log('🎥 Remote stream received')
+          setRemoteStream(stream)
+        })
+
+        // Handle data channel
+        rtcPeer.on('data_channel_open', () => {
+          console.log('📢 Data channel opened')
+          setDataChannelStatus('open')
+        })
+
+        rtcPeer.on('data_channel_close', () => {
+          console.log('📢 Data channel closed')
+          setDataChannelStatus('closed')
+        })
+
+        rtcPeer.on('data_channel_message', (message) => {
+          console.log('📢 Received via data channel:', message)
+        })
+        
+        rtcPeer.on('data_channel_error', (error) => {
+          console.error('📢 Data channel error:', error)
         })
         
         // Handle disconnection
         ws.on('disconnected', () => {
           setConnectionStatus('Disconnected')
+          rtcPeer.close()
+        })
+        
+        ws.on('peer_left', () => {
+          console.log('👋 Peer left')
+          setConnectionStatus('Peer Disconnected')
+          rtcPeer.close()
         })
         
         // Handle errors
@@ -46,7 +143,7 @@ export default function RoomLayout({ roomCode, onLeaveRoom }) {
           setConnectionStatus('Connection failed')
         })
       } catch (error) {
-        console.error('Failed to connect:', error)
+        console.error('Failed to initialize:', error)
         setConnectionStatus('Connection failed')
       }
     }
@@ -55,11 +152,12 @@ export default function RoomLayout({ roomCode, onLeaveRoom }) {
 
     // Cleanup on unmount
     return () => {
+      rtcPeer.close()
       if (ws.isConnected()) {
         ws.disconnect()
       }
     }
-  }, [roomCode])
+  }, [])
 
   const handleCopyRoomCode = () => {
     navigator.clipboard.writeText(roomCode)
@@ -75,6 +173,69 @@ export default function RoomLayout({ roomCode, onLeaveRoom }) {
     if (onLeaveRoom) {
       onLeaveRoom()
     }
+  }
+
+  // Start local media stream
+  const startLocalMedia = async () => {
+    try {
+      const constraints = {
+        audio: true,
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        }
+      }
+      const stream = await rtcPeer.getUserMedia(constraints)
+      setLocalStream(stream)
+      setIsAudioEnabled(true)
+      setIsVideoEnabled(true)
+
+      // Add local stream to peer connection (handles renegotiation)
+      if (rtcPeer.peerConnection && rtcPeer.peerConnection.connectionState !== 'closed') {
+        console.log('🎥 Adding local stream to established peer connection')
+        await rtcPeer.addLocalStream(stream) // This now calls renegotiateConnection()
+      }
+    } catch (error) {
+      console.error('Failed to get user media:', error)
+      alert('Failed to access camera/microphone. Please check permissions.')
+    }
+  }
+
+  // Stop local media stream
+  const stopLocalMedia = () => {
+    if (localStream) {
+      rtcPeer.stopLocalStream()
+      setLocalStream(null)
+      setIsAudioEnabled(false)
+      setIsVideoEnabled(false)
+    }
+  }
+
+  // Toggle audio
+  const toggleAudio = () => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = !track.enabled
+      })
+      setIsAudioEnabled(!isAudioEnabled)
+    }
+  }
+
+  // Toggle video
+  const toggleVideo = () => {
+    if (localStream) {
+      localStream.getVideoTracks().forEach(track => {
+        track.enabled = !track.enabled
+      })
+      setIsVideoEnabled(!isVideoEnabled)
+    }
+  }
+
+  // Send message via data channel
+  const sendDataChannelMessage = (message) => {
+    const result = rtcPeer.sendDataChannelMessage(message)
+    console.log('📤 sendDataChannelMessage result:', result, 'dataChannel state:', rtcPeer.dataChannel?.readyState)
+    return result
   }
 
   return (
@@ -172,16 +333,27 @@ export default function RoomLayout({ roomCode, onLeaveRoom }) {
       {/* Main Content Area */}
       <main className="room-main">
         <div className="room-content">
-          {activeTab === 'chat' && <ChatView />}
+          {activeTab === 'chat' && <ChatView onSendMessage={sendDataChannelMessage} />}
           {activeTab === 'files' && <FilesView />}
-          {activeTab === 'video' && <VideoView />}
+          {activeTab === 'video' && (
+            <VideoView 
+              localStream={localStream}
+              remoteStream={remoteStream}
+              isVideoEnabled={isVideoEnabled}
+              isAudioEnabled={isAudioEnabled}
+              onStartMedia={startLocalMedia}
+              onStopMedia={stopLocalMedia}
+              onToggleAudio={toggleAudio}
+              onToggleVideo={toggleVideo}
+            />
+          )}
         </div>
       </main>
     </div>
   )
 }
 
-function ChatView() {
+function ChatView({ onSendMessage }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const messagesEndRef = useRef(null)
@@ -189,19 +361,23 @@ function ChatView() {
   // Listen for incoming messages
   useEffect(() => {
     const handleMessage = (data) => {
+      console.log('📥 ChatView received message:', data)
+      const text = typeof data === 'string' ? data : data.text
       const newMessage = {
         id: Date.now(),
-        text: data.text,
+        text: text,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         sender: 'peer'
       }
+      console.log('📥 Adding peer message to chat:', newMessage)
       setMessages(prev => [...prev, newMessage])
     }
 
-    ws.on('chat_message', handleMessage)
+    // Listen via data channel
+    rtcPeer.on('data_channel_text', handleMessage)
 
     return () => {
-      ws.off('chat_message', handleMessage)
+      rtcPeer.off('data_channel_text', handleMessage)
     }
   }, [])
 
@@ -222,8 +398,13 @@ function ChatView() {
       }
       setMessages(prev => [...prev, newMessage])
       
-      // Send through WebSocket
-      ws.send('chat_message', { text: input })
+      // Send through data channel
+      if (onSendMessage) {
+        onSendMessage(input)
+      } else {
+        // Fallback to WebSocket if data channel not available
+        ws.send('chat_message', { text: input })
+      }
       setInput('')
     }
   }
@@ -269,83 +450,303 @@ function ChatView() {
 }
 
 function FilesView() {
-  const [files, setFiles] = useState([
-    { id: 1, name: 'design-spec.pdf', size: '2.4 MB', progress: 100, status: 'complete' },
-    { id: 2, name: 'screenshot.png', size: '1.1 MB', progress: 67, status: 'uploading' },
-    { id: 3, name: 'project.zip', size: '14.8 MB', progress: 34, status: 'uploading' },
-  ])
+  const [sendingFiles, setSendingFiles] = useState({}) // fileId -> {name, progress, status}
+  const [receivedFiles, setReceivedFiles] = useState([]) // {fileId, name, blob, downloadUrl}
+  const fileInputRef = useRef(null)
+
+  // Listen for file transfer events
+  useEffect(() => {
+    const handleFileSendProgress = (data) => {
+      setSendingFiles(prev => ({
+        ...prev,
+        [data.fileId]: {
+          name: data.fileName,
+          progress: Math.round(data.progress),
+          status: 'uploading'
+        }
+      }))
+    }
+
+    const handleFileSent = (data) => {
+      setSendingFiles(prev => ({
+        ...prev,
+        [data.fileId]: {
+          ...prev[data.fileId],
+          status: 'complete',
+          progress: 100
+        }
+      }))
+    }
+
+    const handleFileReceiveProgress = (data) => {
+      setSendingFiles(prev => ({
+        ...prev,
+        [data.fileId]: {
+          name: data.fileName,
+          progress: Math.round(data.progress),
+          status: 'downloading'
+        }
+      }))
+    }
+
+    const handleFileReceived = (data) => {
+      const downloadUrl = URL.createObjectURL(data.blob)
+      setReceivedFiles(prev => [...prev, {
+        fileId: data.fileId,
+        name: data.fileName,
+        blob: data.blob,
+        downloadUrl,
+        status: 'complete'
+      }])
+
+      setSendingFiles(prev => {
+        const updated = { ...prev }
+        delete updated[data.fileId]
+        return updated
+      })
+    }
+
+    rtcPeer.on('file_send_progress', handleFileSendProgress)
+    rtcPeer.on('file_sent', handleFileSent)
+    rtcPeer.on('file_receive_progress', handleFileReceiveProgress)
+    rtcPeer.on('file_received', handleFileReceived)
+
+    return () => {
+      rtcPeer.off('file_send_progress', handleFileSendProgress)
+      rtcPeer.off('file_sent', handleFileSent)
+      rtcPeer.off('file_receive_progress', handleFileReceiveProgress)
+      rtcPeer.off('file_received', handleFileReceived)
+    }
+  }, [])
+
+  const handleFileSelect = async (files) => {
+    if (!files || files.length === 0) return
+
+    for (let file of files) {
+      try {
+        await rtcPeer.sendFile(file)
+      } catch (error) {
+        console.error('Error sending file:', error)
+        setSendingFiles(prev => ({
+          ...prev,
+          [file.name]: {
+            name: file.name,
+            progress: 0,
+            status: 'error'
+          }
+        }))
+      }
+    }
+  }
 
   const handleDrop = (e) => {
     e.preventDefault()
-    // Handle file drop
+    e.stopPropagation()
+    const files = e.dataTransfer.files
+    handleFileSelect(files)
   }
+
+  const handleBrowseClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleInputChange = (e) => {
+    const files = e.target.files
+    handleFileSelect(files)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const downloadFile = (file) => {
+    const link = document.createElement('a')
+    link.href = file.downloadUrl
+    link.download = file.name
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  const allFiles = [
+    ...Object.entries(sendingFiles).map(([fileId, data]) => ({
+      id: fileId,
+      ...data,
+      type: 'sending'
+    })),
+    ...receivedFiles.map(file => ({
+      ...file,
+      type: 'received'
+    }))
+  ]
 
   return (
     <div className="files-view">
       <div className="files-header">
         <h2>Files</h2>
-        <p className="files-subtitle">Drag & drop to share</p>
+        <p className="files-subtitle">Drag & drop or click to share</p>
       </div>
 
-      <div className="drop-zone" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        onChange={handleInputChange}
+        style={{ display: 'none' }}
+        aria-label="Select files"
+      />
+
+      <div
+        className="drop-zone"
+        onDrop={handleDrop}
+        onDragOver={(e) => e.preventDefault()}
+        onClick={handleBrowseClick}
+      >
         <div className="drop-icon"><Upload size={32} /></div>
         <div className="drop-text">Drop files here</div>
         <div className="drop-subtext">or click to browse</div>
       </div>
 
       <div className="files-list">
-        {files.map((file) => (
-          <div key={file.id} className="file-item">
-            <div className="file-icon"><File size={24} /></div>
-            <div className="file-info">
-              <div className="file-name">{file.name}</div>
-              <div className="file-size">{file.size} · {file.status}</div>
-              {file.progress < 100 && (
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${file.progress}%` }}></div>
+        {allFiles.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '20px', color: '#888' }}>
+            No files yet
+          </div>
+        ) : (
+          allFiles.map((file) => (
+            <div key={file.id} className="file-item">
+              <div className="file-icon"><File size={24} /></div>
+              <div className="file-info">
+                <div className="file-name">{file.name}</div>
+                <div className="file-size">
+                  {file.progress}% · {file.status}
                 </div>
+                {file.progress < 100 && (
+                  <div className="progress-bar">
+                    <div
+                      className="progress-fill"
+                      style={{
+                        width: `${file.progress}%`,
+                        backgroundColor: file.type === 'receiving' ? '#4CAF50' : '#2196F3'
+                      }}
+                    ></div>
+                  </div>
+                )}
+              </div>
+              {file.type === 'received' && file.status === 'complete' && (
+                <button
+                  className="file-action"
+                  onClick={() => downloadFile(file)}
+                  title="Download file"
+                >
+                  <Download size={20} />
+                </button>
               )}
             </div>
-            <button className="file-action" aria-label={`Download ${file.name}`}>
-              <Download size={20} />
-            </button>
-          </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   )
 }
 
-function VideoView() {
+function VideoView({
+  localStream,
+  remoteStream,
+  isVideoEnabled,
+  isAudioEnabled,
+  onStartMedia,
+  onStopMedia,
+  onToggleAudio,
+  onToggleVideo
+}) {
+  const remoteVideoRef = useRef(null)
+  const localVideoRef = useRef(null)
+
+  // Update video elements when streams change
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream
+    }
+  }, [remoteStream])
+
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream
+    }
+  }, [localStream])
+
   return (
     <div className="video-view">
       <div className="video-header">
         <h2>Video Call</h2>
         <p className="video-subtitle">Peer-to-peer connection</p>
+        {localStream && <p style={{ fontSize: '12px', color: '#888' }}>📹 Camera: {isVideoEnabled ? 'ON' : 'OFF'} | 🎤 Mic: {isAudioEnabled ? 'ON' : 'OFF'}</p>}
       </div>
 
       <div className="video-container">
-        <div className="video-placeholder">
-          <div className="video-icon"><Video size={48} /></div>
-          <div className="video-status">Waiting for peer...</div>
-          <div className="video-info">Video will appear here</div>
-        </div>
+        {remoteStream ? (
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            style={{ width: '100%', backgroundColor: '#000', borderRadius: '8px' }}
+          />
+        ) : (
+          <div className="video-placeholder">
+            <div className="video-icon"><Video size={48} /></div>
+            <div className="video-status">{localStream ? 'Waiting for peer video...' : 'Start video to begin'}</div>
+            <div className="video-info">Peer video will appear here</div>
+          </div>
+        )}
 
-        <div className="local-video">
-          <div className="local-placeholder">You</div>
-        </div>
+        {localStream && (
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              position: 'absolute',
+              bottom: '20px',
+              right: '20px',
+              width: '150px',
+              height: '150px',
+              backgroundColor: '#000',
+              borderRadius: '8px',
+              border: '2px solid #00d4ff'
+            }}
+          />
+        )}
       </div>
 
       <div className="video-controls">
-        <button className="control-btn microphone" aria-label="Toggle microphone">
-          <Mic size={20} />
-        </button>
-        <button className="control-btn camera" aria-label="Toggle camera">
-          <Camera size={20} />
-        </button>
-        <button className="control-btn end-call" aria-label="End call">
-          <X size={20} />
-        </button>
+        {!localStream ? (
+          <button className="control-btn start-call" onClick={onStartMedia} aria-label="Start video">
+            <Video size={20} /> Start
+          </button>
+        ) : (
+          <>
+            <button
+              className={`control-btn ${isAudioEnabled ? 'microphone' : 'microphone-off'}`}
+              onClick={onToggleAudio}
+              aria-label="Toggle microphone"
+              title={isAudioEnabled ? 'Mute' : 'Unmute'}
+            >
+              <Mic size={20} />
+            </button>
+            <button
+              className={`control-btn ${isVideoEnabled ? 'camera' : 'camera-off'}`}
+              onClick={onToggleVideo}
+              aria-label="Toggle camera"
+              title={isVideoEnabled ? 'Stop video' : 'Start video'}
+            >
+              <Camera size={20} />
+            </button>
+            <button className="control-btn end-call" onClick={onStopMedia} aria-label="Stop call">
+              <X size={20} />
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

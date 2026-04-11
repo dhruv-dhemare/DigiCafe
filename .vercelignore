@@ -1,0 +1,9 @@
+server/
+node_modules/
+*.local
+.env
+.env.*.local
+.git
+.gitignore
+dist
+build

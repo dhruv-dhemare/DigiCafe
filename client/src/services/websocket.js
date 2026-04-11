@@ -2,7 +2,28 @@
 class WebSocketService {
   constructor() {
     this.ws = null
-    this.url = `ws://${window.location.hostname}:3000`
+    
+    // Get backend URL from environment or default
+    // For production: VITE_BACKEND_URL env variable
+    // For development: localhost:3000
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 
+                       `${window.location.hostname}:3000`
+    
+    // Determine protocol (WSS for HTTPS, WS for HTTP)
+    const isHttps = window.location.protocol === 'https:' || 
+                    backendUrl.includes('https') ||
+                    import.meta.env.VITE_BACKEND_URL?.includes('https')
+    const protocol = isHttps ? 'wss' : 'ws'
+    
+    // Extract host from URL (remove protocol if present)
+    const host = backendUrl
+      .replace('https://', '')
+      .replace('http://', '')
+      .replace('wss://', '')
+      .replace('ws://', '')
+    
+    this.url = `${protocol}://${host}`
+    
     this.listeners = {}
     this.messageQueue = []
     this.reconnectAttempts = 0
@@ -14,10 +35,16 @@ class WebSocketService {
   connect() {
     return new Promise((resolve, reject) => {
       try {
+        const protocol = this.url.startsWith('wss') ? '🔒 WSS (Encrypted)' : '⚠️  WS (Unencrypted)'
+        console.log(`Connecting to ${protocol}: ${this.url}`)
+        
         this.ws = new WebSocket(this.url)
 
         this.ws.onopen = () => {
           console.log('✓ WebSocket connected')
+          if (this.url.startsWith('wss')) {
+            console.log('🔒 Connection is encrypted (WSS)')
+          }
           this.reconnectAttempts = 0
           this.flushMessageQueue()
           this.emit('connected')
@@ -32,6 +59,11 @@ class WebSocketService {
 
         this.ws.onerror = (error) => {
           console.error('✗ WebSocket error:', error)
+          // If WSS certificate error, provide helpful message
+          if (this.url.startsWith('wss')) {
+            console.log('💡 Tip: Self-signed certificates may require browser acceptance')
+            console.log('💡 Visit https://localhost:3000 in browser to accept the certificate')
+          }
           this.emit('error', error)
           reject(error)
         }
