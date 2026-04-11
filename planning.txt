@@ -1,0 +1,196 @@
+1. Project Initialization
+
+👉 Goal: Get the base project running
+
+Create root folder (BifrostMesh)
+Setup:
+/client (React + Vite)
+/server (Node.js)
+Initialize git
+Setup basic README
+
+✅ Output: Project runs without errors
+
+🟢 2. Basic Frontend Setup
+
+👉 Goal: Clean UI foundation
+
+Remove Vite boilerplate
+Create structure:
+components/
+pages/
+styles/
+Build simple UI:
+Create Room button
+Join Room input
+Setup routing (optional)
+
+✅ Output: UI ready for interaction
+
+-------------------------------------------------------------------------------------------------------
+Done till here
+-------------------------------------------------------------------------------------------------------
+Done till here
+-------------------------------------------------------------------------------------------------------
+
+✅ 3. Backend Server Setup
+
+👉 Goal: Start your backend
+
+Setup Express server ✓
+Enable CORS ✓
+Add basic route /health ✓
+Setup environment variables ✓
+
+✅ Output: Backend running on port 3000
+
+-------------------------------------------------------------------------------------------------------
+Done till here
+-------------------------------------------------------------------------------------------------------
+Done till here
+-------------------------------------------------------------------------------------------------------
+
+✅ 4. WebSocket Setup (Signaling Base)
+
+👉 Goal: Enable real-time communication
+
+Setup WebSocket server (ws) ✓
+Connect frontend ↔ backend ✓
+Test sending messages ✓
+
+✅ Output: Real-time connection working
+
+Key Features Implemented:
+- WebSocket service on client with auto-reconnect
+- Message type routing (join, ping, chat_message, etc)
+- Server-side message handling with rooms
+- Connection status tracking
+- Message queue for offline messages
+- Listener pattern for event handling
+
+-------------------------------------------------------------------------------------------------------
+Done till here
+-------------------------------------------------------------------------------------------------------
+Done till here
+-------------------------------------------------------------------------------------------------------
+
+🟡 5. Room Management System
+
+👉 Goal: Connect two users logically
+
+Create room ID generator
+
+Store:
+
+roomId → clients[]
+Handle:
+create room
+join room
+
+✅ Output: Two users can join same room
+
+🟡 6. Signaling Logic (CORE)
+
+👉 Goal: Enable WebRTC negotiation
+
+Implement message types:
+offer
+answer
+ICE candidate
+Relay messages via server
+
+✅ Output: Peers can exchange connection data
+
+🔵 7. WebRTC Connection Setup
+
+👉 Goal: Establish P2P connection
+
+Create RTCPeerConnection
+Add STUN server
+Implement:
+createOffer()
+createAnswer()
+setLocal/RemoteDescription()
+
+✅ Output: Peer connection established
+
+🔵 8. ICE Candidate Handling
+
+👉 Goal: Make connection reliable
+
+Exchange ICE candidates
+Add to peer connection
+
+✅ Output: Works across networks (NAT traversal)
+
+🟣 9. DataChannel Setup
+
+👉 Goal: Enable direct data transfer
+
+Create RTCDataChannel
+Handle:
+open
+message
+
+✅ Output: Send text messages P2P
+
+🔴 10. File Sharing System
+
+👉 Goal: Core feature
+
+File input UI
+Split file into chunks
+Send via DataChannel
+Reassemble on receiver side
+Download file
+
+✅ Output: File sharing works
+
+🟠 11. Messaging Feature
+
+👉 Goal: Chat system
+
+Use same DataChannel
+Add chat UI
+Handle message types
+
+✅ Output: Real-time chat working
+
+🔴 12. Video Calling (WebRTC Media)
+
+👉 Goal: Add media streaming
+
+Get user media (camera/mic)
+Add tracks to peer connection
+Render remote stream
+
+✅ Output: Video call works
+
+⚡ 13. UI Enhancements
+
+👉 Goal: Make it usable
+
+Progress bar (file transfer)
+Connection status
+Error messages
+🧠 14. PostgreSQL Integration
+
+👉 Goal: Add persistence
+
+Store:
+room logs
+timestamps
+Connect using pg
+🔒 15. JWT (Lightweight Session)
+
+👉 Goal: Basic validation
+
+Generate token per room/session
+Validate on join
+🚀 16. Optimization & Stability
+
+👉 Goal: Make it solid
+
+Handle disconnects
+Retry logic
+Backpressure handling

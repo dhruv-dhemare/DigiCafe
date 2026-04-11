@@ -1,13 +1,65 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, File, Download, Mic, Camera } from 'lucide-react'
 import Logo from '../components/Logo'
 import '../styles/room.css'
+import ws from '../services/websocket'
 
 export default function RoomLayout({ roomCode, onLeaveRoom }) {
   const [activeTab, setActiveTab] = useState('chat')
   const [connectionStatus, setConnectionStatus] = useState('Connecting...')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isCopied, setIsCopied] = useState(false)
+
+  // Connect to WebSocket on mount
+  useEffect(() => {
+    const initWebSocket = async () => {
+      try {
+        setConnectionStatus('Connecting...')
+        await ws.connect()
+        
+        // Join room after connection
+        ws.send('join', { roomId: roomCode })
+        
+        // Update status when connected
+        ws.on('connected', () => {
+          setConnectionStatus('Connected')
+        })
+        
+        // Handle join confirmation
+        ws.on('join_confirmed', (data) => {
+          console.log('✓ Joined room:', data.roomId)
+          setConnectionStatus('Connected')
+        })
+        
+        // Handle disconnection
+        ws.on('disconnected', () => {
+          setConnectionStatus('Disconnected')
+        })
+        
+        // Handle errors
+        ws.on('error', (error) => {
+          console.error('WebSocket error:', error)
+          setConnectionStatus('Error')
+        })
+        
+        ws.on('reconnect_failed', () => {
+          setConnectionStatus('Connection failed')
+        })
+      } catch (error) {
+        console.error('Failed to connect:', error)
+        setConnectionStatus('Connection failed')
+      }
+    }
+
+    initWebSocket()
+
+    // Cleanup on unmount
+    return () => {
+      if (ws.isConnected()) {
+        ws.disconnect()
+      }
+    }
+  }, [roomCode])
 
   const handleCopyRoomCode = () => {
     navigator.clipboard.writeText(roomCode)
@@ -130,22 +182,48 @@ export default function RoomLayout({ roomCode, onLeaveRoom }) {
 }
 
 function ChatView() {
-  const [messages, setMessages] = useState([
-    { id: 1, text: "Hey, I'm connected!", time: '12:01', sender: 'peer' },
-    { id: 2, text: 'Got it, thanks! The connection is really fast.', time: '12:03', sender: 'peer' },
-  ])
+  const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const messagesEndRef = useRef(null)
+
+  // Listen for incoming messages
+  useEffect(() => {
+    const handleMessage = (data) => {
+      const newMessage = {
+        id: Date.now(),
+        text: data.text,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        sender: 'peer'
+      }
+      setMessages(prev => [...prev, newMessage])
+    }
+
+    ws.on('chat_message', handleMessage)
+
+    return () => {
+      ws.off('chat_message', handleMessage)
+    }
+  }, [])
+
+  // Auto-scroll to latest message
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   const handleSendMessage = (e) => {
     e.preventDefault()
     if (input.trim()) {
-      setMessages([...messages, {
-        id: messages.length + 1,
+      // Add message to local UI
+      const newMessage = {
+        id: Date.now(),
         text: input,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        sender: 'you',
-      }])
+        sender: 'you'
+      }
+      setMessages(prev => [...prev, newMessage])
+      
+      // Send through WebSocket
+      ws.send('chat_message', { text: input })
       setInput('')
     }
   }
@@ -158,12 +236,18 @@ function ChatView() {
       </div>
 
       <div className="chat-messages">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`message ${msg.sender}`}>
-            <div className="message-bubble">{msg.text}</div>
-            <div className="message-time">{msg.time}</div>
+        {messages.length === 0 ? (
+          <div style={{ textAlign: 'center', color: '#999', padding: '20px' }}>
+            No messages yet. Start the conversation!
           </div>
-        ))}
+        ) : (
+          messages.map((msg) => (
+            <div key={msg.id} className={`message ${msg.sender}`}>
+              <div className="message-bubble">{msg.text}</div>
+              <div className="message-time">{msg.time}</div>
+            </div>
+          ))
+        )}
         <div ref={messagesEndRef} />
       </div>
 
