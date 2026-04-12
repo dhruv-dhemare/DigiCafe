@@ -4,12 +4,13 @@ services:
     env: node
     region: oregon
     plan: starter
+    rootDir: server
     
     # Build command
-    buildCommand: cd server && npm install
+    buildCommand: npm install
     
     # Start command
-    startCommand: cd server && node src/index.js
+    startCommand: node src/index.js
     
     # Environment variables (set these in Render dashboard)
     envVars:
