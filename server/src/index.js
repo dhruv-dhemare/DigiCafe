@@ -290,13 +290,25 @@ setInterval(() => {
   databaseService.cleanupOldRooms(24).catch(err => console.error('Cleanup error:', err))
 }, 60 * 60 * 1000)
 
-// Start server
+// Start server with error handling
+server.on('error', (error) => {
+  console.error('❌ Server error:', error)
+  process.exit(1)
+})
+
 server.listen(config.port, () => {
   console.log(`✓ Server running on http://localhost:${config.port}`)
   console.log(`✓ WebSocket server ready on ws://localhost:${config.port}`)
+  console.log(`✓ Environment: ${config.nodeEnv}`)
 })
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully')
   server.close()
+})
+
+// Catch any uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught exception:', error)
+  process.exit(1)
 })
