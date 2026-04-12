@@ -11,10 +11,26 @@ class RTCPeerManager {
     this.remoteStream = null
     this.iceCandidateQueue = [] // Queue for candidates before peer connection ready
     
-    // STUN servers for NAT traversal
+    // STUN/TURN servers for NAT traversal
     this.iceServers = [
       { urls: ['stun:stun.l.google.com:19302'] },
-      { urls: ['stun:stun1.l.google.com:19302'] }
+      { urls: ['stun:stun1.l.google.com:19302'] },
+      // Public TURN servers (fallback for restricted networks)
+      {
+        urls: ['turn:openrelay.metered.ca:80'],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: ['turn:openrelay.metered.ca:443'],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: ['turn:openrelay.metered.ca:443?transport=tcp'],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ]
   }
 
