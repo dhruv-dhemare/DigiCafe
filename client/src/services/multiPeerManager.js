@@ -135,6 +135,19 @@ class MultiPeerManager {
       this.setupDataChannel(peerId, event.channel)
     }
 
+    // Handle negotiation needed
+    peerConnection.onnegotiationneeded = async () => {
+      console.log(`🔄 Negotiation needed for ${peerId}`);
+      try {
+        peerData.makingOffer = true;
+        await this.createAndSendOffer(peerId);
+      } catch (err) {
+        console.error('Error during negotiation:', err);
+      } finally {
+        peerData.makingOffer = false;
+      }
+    };
+
     this.peers.set(peerId, peerData)
     
     // Emit peer_initialized event immediately (not waiting for connection)
@@ -185,6 +198,14 @@ class MultiPeerManager {
     if (!peerData) {
       peerData = this.initializePeerConnection(peerId, false, userName)
       if (!peerData) peerData = this.peers.get(peerId)
+    }
+
+    const offerCollision = peerData.makingOffer || peerData.connection.signalingState !== "stable";
+    const polite = !peerData.isInitiator;
+
+    if (offerCollision && !polite) {
+      // Ignore the offer
+      return;
     }
 
     try {
@@ -373,6 +394,24 @@ class MultiPeerManager {
   async getUserMedia(constraints) {
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints)
+      
+      // Add tracks to all existing connections
+      this.peers.forEach((peerData) => {
+        if (peerData.connection) {
+          const senders = peerData.connection.getSenders();
+          this.localStream.getTracks().forEach(track => {
+            // Check if track kind is already being sent to reuse sender if possible,
+            // though adding a new track will trigger negotiation needed
+            const sender = senders.find(s => s.track && s.track.kind === track.kind);
+            if (sender) {
+              sender.replaceTrack(track);
+            } else {
+              peerData.connection.addTrack(track, this.localStream);
+            }
+          });
+        }
+      });
+
       return this.localStream
     } catch (error) {
       console.error('Error getting user media:', error)
@@ -383,7 +422,20 @@ class MultiPeerManager {
   // Stop local stream
   stopLocalStream() {
     if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop())
+      this.localStream.getTracks().forEach(track => {
+        track.stop()
+        
+        // Remove tracks from all existing connections
+        this.peers.forEach((peerData) => {
+          if (peerData.connection) {
+            const senders = peerData.connection.getSenders();
+            const sender = senders.find(s => s.track === track);
+            if (sender) {
+              peerData.connection.removeTrack(sender);
+            }
+          }
+        });
+      })
       this.localStream = null
     }
   }
@@ -422,18 +474,43 @@ class MultiPeerManager {
       mimeType: file.type
     })
 
+    const peerData = this.peers.get(peerId);
+    const dataChannel = peerData ? peerData.dataChannels.get('files') : null;
+
     // Send file chunks
     for (let i = 0; i < totalChunks; i++) {
+      if (dataChannel && dataChannel.bufferedAmount > 1024 * 1024) { // 1MB buffer limit
+        await new Promise(resolve => {
+          const checkBuffer = () => {
+            if (dataChannel.bufferedAmount < 512 * 1024) {
+              resolve();
+            } else {
+              setTimeout(checkBuffer, 50);
+            }
+          };
+          checkBuffer();
+        });
+      }
+
       const start = i * chunkSize
       const end = Math.min(start + chunkSize, fileData.length)
       const chunk = fileData.slice(start, end)
+
+      let binary = '';
+      for (let j = 0; j < chunk.length; j++) {
+        binary += String.fromCharCode(chunk[j]);
+      }
+      const b64Data = window.btoa(binary);
 
       this.sendMessage(peerId, 'files', {
         type: 'file_chunk',
         fileId,
         chunkIndex: i,
-        data: Array.from(chunk)
+        data: b64Data
       })
+
+      // Yield to event loop to prevent blocking UI
+      if (i % 10 === 0) await new Promise(r => setTimeout(r, 0));
 
       // Emit progress
       const progress = ((i + 1) / totalChunks) * 100
@@ -467,7 +544,13 @@ class MultiPeerManager {
       const fileData = this._receivingFiles.get(message.fileId)
       if (fileData) {
         if (!fileData.chunks[message.chunkIndex]) {
-          fileData.chunks[message.chunkIndex] = new Uint8Array(message.data)
+          const binary_string = window.atob(message.data);
+          const len = binary_string.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) {
+            bytes[i] = binary_string.charCodeAt(i);
+          }
+          fileData.chunks[message.chunkIndex] = bytes;
           fileData.received++
         }
 
