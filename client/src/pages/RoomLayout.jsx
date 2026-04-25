@@ -143,17 +143,25 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
         
         // When a user leaves
         ws.on('user_left', (data) => {
-          console.log('👋 User left:', data.leftUserName)
+          console.log('👋 User left:', data.leftUserName, `(${data.leftUserId})`)
           setRoomUsers(data.users || [])
           setConnectionStatus(`${data.leftUserName} left the room`)
           
-          // Close peer connection
+          // Close peer connection and clean up all references
+          console.log(`🧹 Cleaning up peer: ${data.leftUserId}`)
           multiPeerManager.closePeer(data.leftUserId)
           
-          // Update remote peers
+          // Update both peer maps
           setRemotePeers(prev => {
             const updated = new Map(prev)
             updated.delete(data.leftUserId)
+            console.log(`🗑️ Removed from remotePeers: ${data.leftUserId}, remaining: ${updated.size}`)
+            return updated
+          })
+          setConnectedPeers(prev => {
+            const updated = new Map(prev)
+            updated.delete(data.leftUserId)
+            console.log(`🗑️ Removed from connectedPeers: ${data.leftUserId}, remaining: ${updated.size}`)
             return updated
           })
         })
@@ -203,16 +211,18 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
         })
         
         multiPeerManager.on('peer_disconnected', (data) => {
-          console.log(`✗ Disconnected from ${data.userName}`)
-          // Remove from both video peers and connected peers
+          console.log(`✗ Disconnected from ${data.userName} (${data.peerId})`)
+          // Remove from both video peers and connected peers immediately
           setRemotePeers(prev => {
             const updated = new Map(prev)
             updated.delete(data.peerId)
+            console.log(`🗑️ Removed from remotePeers: ${data.peerId}, remaining: ${updated.size}`)
             return updated
           })
           setConnectedPeers(prev => {
             const updated = new Map(prev)
             updated.delete(data.peerId)
+            console.log(`🗑️ Removed from connectedPeers: ${data.peerId}, remaining: ${updated.size}`)
             return updated
           })
         })
@@ -339,18 +349,23 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
   const sendMessage = (message) => {
     // Use connectedPeers for messaging (includes peers without video)
     const peers = Array.from(connectedPeers.keys())
-    console.log(`📤 Sending message to ${peers.length} connected peers:`, Array.from(connectedPeers.values()).map(p => p.userName))
+    const peersList = Array.from(connectedPeers.values()).map(p => p.userName)
+    console.log(`📤 Sending message to ${peers.length} connected peers: ${peersList.join(', ') || 'NONE'}`)
+    console.log(`   Connected peers: ${peers.join(', ') || 'NONE'}`)
     let sent = false
     
     if (peers.length === 0) {
-      console.warn('⚠️ No connected peers to send message to')
+      console.warn('⚠️ No connected peers to send message to (may still be connecting)')
       return false
     }
     
     peers.forEach(peerId => {
-      if (multiPeerManager.sendMessage(peerId, 'chat', { type: 'text', text: message })) {
+      const channelOpen = multiPeerManager.sendMessage(peerId, 'chat', { type: 'text', text: message })
+      if (channelOpen) {
         console.log(`✓ Message sent to peer ${peerId}`)
         sent = true
+      } else {
+        console.warn(`⚠️ Data channel not open for peer ${peerId}`)
       }
     })
     

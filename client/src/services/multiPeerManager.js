@@ -267,7 +267,7 @@ class MultiPeerManager {
     peerData.dataChannels.set(dataChannel.label, dataChannel)
 
     dataChannel.onopen = () => {
-      console.log(`📢 Data channel opened: ${dataChannel.label} for ${peerId}`)
+      console.log(`✅ Data channel OPENED: "${dataChannel.label}" for ${peerId} (${peerData.isInitiator ? 'initiator' : 'responder'})`)
       this.emit('data_channel_open', { peerId, label: dataChannel.label })
     }
 
@@ -280,7 +280,7 @@ class MultiPeerManager {
     dataChannel.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
-        console.log(`📢 Data channel message from ${peerId}:`, message)
+        console.log(`� Message received on \"${dataChannel.label}\" from ${peerId}:`, message)
         this.emit('data_channel_message', { peerId, message, label: dataChannel.label })
         
         // Emit specific events based on message type
@@ -310,17 +310,23 @@ class MultiPeerManager {
     }
 
     const dataChannel = peerData.dataChannels.get(label)
-    if (!dataChannel || dataChannel.readyState !== 'open') {
-      console.warn(`Data channel ${label} not open for ${peerId}`)
+    if (!dataChannel) {
+      console.warn(`📢 Data channel "${label}" not created yet for ${peerId} (state: peer found but channel missing)`)
+      return false
+    }
+    
+    if (dataChannel.readyState !== 'open') {
+      console.warn(`📢 Data channel "${label}" not open for ${peerId} (state: ${dataChannel.readyState})`)
       return false
     }
 
     try {
       const msgData = typeof message === 'string' ? { type: 'text', text: message } : message
       dataChannel.send(JSON.stringify(msgData))
+      console.log(`📢 Message sent on channel "${label}" to ${peerId}`)
       return true
     } catch (error) {
-      console.error(`Error sending message to ${peerId}:`, error)
+      console.error(`Error sending message to ${peerId} on channel ${label}:`, error)
       return false
     }
   }
