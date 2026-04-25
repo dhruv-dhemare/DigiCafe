@@ -1,8 +1,9 @@
-// Room Manager - Handles room creation, joining, and client tracking
+// Room Manager - Handles room creation, joining, and client tracking for multi-user WebRTC
 class RoomManager {
   constructor() {
-    this.rooms = new Map() // roomId -> { clients: Set, createdAt }
+    this.rooms = new Map() // roomId -> { users: Map<wsClient, {name, clientId}>, createdAt, userCount }
     this.userRooms = new Map() // wsClient -> roomId
+    this.clientIds = new Map() // wsClient -> clientId (unique identifier for each connection)
   }
 
   // Generate unique room ID
@@ -10,20 +11,25 @@ class RoomManager {
     return Math.random().toString(36).substr(2, 9).toUpperCase()
   }
 
+  // Generate unique client ID
+  generateClientId() {
+    return 'user_' + Math.random().toString(36).substr(2, 9)
+  }
+
   // Create a new room
   createRoom() {
     const roomId = this.generateRoomId()
     this.rooms.set(roomId, {
-      clients: new Set(),
+      users: new Map(), // wsClient -> {name, clientId, joinedAt}
       createdAt: Date.now(),
-      peerId: null // Will store first client's peer ID
+      userCount: 0
     })
     console.log(`🏠 Room created: ${roomId}`)
     return roomId
   }
 
   // Join a room
-  joinRoom(roomId, ws) {
+  joinRoom(roomId, ws, userName) {
     if (!this.rooms.has(roomId)) {
       console.warn(`Room not found: ${roomId}`)
       return false
@@ -31,17 +37,26 @@ class RoomManager {
 
     const room = this.rooms.get(roomId)
     
-    // Check if room is full (max 2 peers for WebRTC)
-    if (room.clients.size >= 2) {
+    // Check if room is full (max 6 users)
+    if (room.users.size >= 6) {
       console.warn(`Room full: ${roomId}`)
       return false
     }
 
-    room.clients.add(ws)
-    this.userRooms.set(ws, roomId)
-    console.log(`👥 Client joined room ${roomId} (now has ${room.clients.size} client(s))`)
+    const clientId = this.generateClientId()
+    room.users.set(ws, {
+      name: userName || `User${room.users.size + 1}`,
+      clientId,
+      joinedAt: Date.now()
+    })
+    room.userCount = room.users.size
     
-    return true
+    this.userRooms.set(ws, roomId)
+    this.clientIds.set(ws, clientId)
+    
+    console.log(`👥 Client "${userName}" joined room ${roomId} (${room.users.size}/6 users)`)
+    
+    return { success: true, clientId, userCount: room.users.size, users: this.getRoomUsers(roomId) }
   }
 
   // Leave a room
@@ -51,17 +66,20 @@ class RoomManager {
 
     const room = this.rooms.get(roomId)
     if (room) {
-      room.clients.delete(ws)
-      console.log(`👤 Client left room ${roomId} (${room.clients.size} remaining)`)
+      const userName = room.users.get(ws)?.name
+      room.users.delete(ws)
+      room.userCount = room.users.size
+      console.log(`👤 Client "${userName}" left room ${roomId} (${room.users.size}/6 remaining)`)
 
       // Delete room if empty
-      if (room.clients.size === 0) {
+      if (room.users.size === 0) {
         this.rooms.delete(roomId)
         console.log(`🗑️ Room deleted: ${roomId}`)
       }
     }
 
     this.userRooms.delete(ws)
+    this.clientIds.delete(ws)
     return roomId
   }
 
@@ -70,10 +88,22 @@ class RoomManager {
     return this.rooms.get(roomId)
   }
 
-  // Get clients in a room
+  // Get all users in a room with their details
+  getRoomUsers(roomId) {
+    const room = this.rooms.get(roomId)
+    if (!room) return []
+    
+    return Array.from(room.users.entries()).map(([ws, userData]) => ({
+      clientId: userData.clientId,
+      name: userData.name,
+      joinedAt: userData.joinedAt
+    }))
+  }
+
+  // Get clients (WebSocket connections) in a room
   getClients(roomId) {
     const room = this.rooms.get(roomId)
-    return room ? Array.from(room.clients) : []
+    return room ? Array.from(room.users.keys()) : []
   }
 
   // Get room ID for a client
@@ -81,13 +111,27 @@ class RoomManager {
     return this.userRooms.get(ws)
   }
 
-  // Broadcast to all clients in a room
+  // Get client ID for a WebSocket connection
+  getClientId(ws) {
+    return this.clientIds.get(ws)
+  }
+
+  // Get user info for a client
+  getUserInfo(ws) {
+    const roomId = this.userRooms.get(ws)
+    if (!roomId) return null
+    
+    const room = this.rooms.get(roomId)
+    return room?.users.get(ws) || null
+  }
+
+  // Broadcast to all clients in a room except sender
   broadcast(roomId, message, excludeWs = null) {
     const room = this.rooms.get(roomId)
     if (!room) return
 
     const msgString = JSON.stringify(message)
-    room.clients.forEach(client => {
+    room.users.forEach((userData, client) => {
       if (excludeWs && client === excludeWs) return
       if (client.readyState === 1) { // WebSocket.OPEN
         client.send(msgString)
@@ -98,11 +142,24 @@ class RoomManager {
   // Send to specific client in room
   send(roomId, message, targetWs) {
     const room = this.rooms.get(roomId)
-    if (!room || !room.clients.has(targetWs)) return
+    if (!room || !room.users.has(targetWs)) return
 
     if (targetWs.readyState === 1) {
       targetWs.send(JSON.stringify(message))
     }
+  }
+
+  // Send to all except sender (for when sender is included)
+  broadcastToAll(roomId, message) {
+    const room = this.rooms.get(roomId)
+    if (!room) return
+
+    const msgString = JSON.stringify(message)
+    room.users.forEach((userData, client) => {
+      if (client.readyState === 1) {
+        client.send(msgString)
+      }
+    })
   }
 
   // Get room stats
@@ -112,9 +169,29 @@ class RoomManager {
       totalClients: this.userRooms.size,
       rooms: Array.from(this.rooms.entries()).map(([id, room]) => ({
         id,
-        clients: room.clients.size,
-        createdAt: new Date(room.createdAt).toISOString()
+        users: room.users.size,
+        maxUsers: 6,
+        createdAt: new Date(room.createdAt).toISOString(),
+        userDetails: Array.from(room.users.values()).map(u => ({ name: u.name, clientId: u.clientId }))
       }))
+    }
+  }
+
+  // Check if room is full
+  isRoomFull(roomId) {
+    const room = this.rooms.get(roomId)
+    return room && room.users.size >= 6
+  }
+
+  // Get room capacity info
+  getRoomCapacity(roomId) {
+    const room = this.rooms.get(roomId)
+    if (!room) return null
+    return {
+      current: room.users.size,
+      max: 6,
+      available: 6 - room.users.size,
+      isFull: room.users.size >= 6
     }
   }
 }

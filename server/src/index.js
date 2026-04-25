@@ -126,25 +126,29 @@ wss.on('connection', (ws) => {
         case 'create':
           // Create new room and join it
           const newRoomId = roomManager.createRoom()
-          const joinedCreate = roomManager.joinRoom(newRoomId, ws)
+          const userName = message.payload?.userName || 'Creator'
+          const createdJoin = roomManager.joinRoom(newRoomId, ws, userName)
           
-          if (joinedCreate) {
+          if (createdJoin && createdJoin.success) {
             clientRoomId = newRoomId
-            clientPeerId = message.payload?.peerId || `peer_${Date.now()}`
+            clientPeerId = createdJoin.clientId
             clientToken = jwtService.generateToken(newRoomId, clientPeerId)
             
             // Log to database
             databaseService.createRoom(newRoomId, clientPeerId).catch(err => console.error('DB error:', err))
             databaseService.createSession(newRoomId, clientPeerId, true).catch(err => console.error('DB error:', err))
-            databaseService.logEvent(newRoomId, 'room_created', { creator: clientPeerId }).catch(err => console.error('DB error:', err))
+            databaseService.logEvent(newRoomId, 'room_created', { creator: clientPeerId, creatorName: userName }).catch(err => console.error('DB error:', err))
             
             ws.send(JSON.stringify({
               type: 'room_created',
               payload: { 
                 roomId: newRoomId,
+                clientId: clientPeerId,
                 token: clientToken,
+                userName: userName,
                 message: 'Room created successfully',
-                clientCount: 1
+                userCount: 1,
+                users: createdJoin.users
               }
             }))
           }
@@ -152,41 +156,49 @@ wss.on('connection', (ws) => {
 
         case 'join':
           const roomId = message.payload.roomId
-          const joined = roomManager.joinRoom(roomId, ws)
+          const joinerName = message.payload?.userName || 'Guest'
+          const joined = roomManager.joinRoom(roomId, ws, joinerName)
           
-          if (joined) {
+          if (joined && joined.success) {
             clientRoomId = roomId
-            clientPeerId = message.payload?.peerId || `peer_${Date.now()}`
+            clientPeerId = joined.clientId
             clientToken = jwtService.generateToken(roomId, clientPeerId)
             
             const room = roomManager.getRoom(roomId)
-            const clientCount = room.clients.size
+            const userCount = room.userCount
             
             // Log to database
             databaseService.createSession(roomId, clientPeerId, false).catch(err => console.error('DB error:', err))
-            databaseService.logEvent(roomId, 'peer_joined', { peerId: clientPeerId }).catch(err => console.error('DB error:', err))
+            databaseService.logEvent(roomId, 'peer_joined', { peerId: clientPeerId, peerName: joinerName }).catch(err => console.error('DB error:', err))
             
-            // Notify joiner
+            // Notify joiner with full user list
             ws.send(JSON.stringify({
               type: 'join_confirmed',
               payload: { 
                 roomId: roomId,
+                clientId: clientPeerId,
                 token: clientToken,
+                userName: joinerName,
                 message: 'Successfully joined room',
-                clientCount: clientCount
+                userCount: userCount,
+                users: joined.users
               }
             }))
 
-            // Notify other client in room (if exists)
-            if (clientCount === 2) {
+            // Notify other users in room about the new user
+            if (userCount > 1) {
               const otherClients = roomManager.getClients(roomId).filter(c => c !== ws)
               otherClients.forEach(other => {
                 other.send(JSON.stringify({
-                  type: 'peer_joined',
+                  type: 'user_joined',
                   payload: { 
-                    roomId: roomId, 
-                    message: 'Another peer joined the room',
-                    clientCount: clientCount
+                    roomId: roomId,
+                    newUser: {
+                      clientId: clientPeerId,
+                      name: joinerName
+                    },
+                    userCount: userCount,
+                    users: joined.users
                   }
                 }))
               })
@@ -201,60 +213,110 @@ wss.on('connection', (ws) => {
 
         case 'chat_message':
           if (clientRoomId) {
+            const senderInfo = roomManager.getUserInfo(ws)
+            const messageData = {
+              text: message.payload.text,
+              senderId: clientPeerId,
+              senderName: senderInfo?.name || 'Unknown',
+              timestamp: Date.now()
+            }
+            
             // Log message to database
             databaseService.saveMessage(clientRoomId, clientPeerId, message.payload.text, 'text').catch(err => console.error('DB error:', err))
             
-            const room = roomManager.getRoom(clientRoomId)
-            const otherClients = roomManager.getClients(clientRoomId).filter(c => c !== ws)
-            otherClients.forEach(other => {
-              other.send(JSON.stringify({
-                type: 'chat_message',
-                payload: {
-                  text: message.payload.text,
-                  timestamp: Date.now()
-                }
-              }))
+            // Broadcast to all users (including sender)
+            roomManager.broadcastToAll(clientRoomId, {
+              type: 'chat_message',
+              payload: messageData
             })
           }
           break
 
-        // WebRTC Signaling Messages
+        // WebRTC Signaling Messages - Support multi-user
         case 'offer':
           if (clientRoomId) {
-            console.log(`📤 Offer relayed in room ${clientRoomId}`)
+            const targetId = message.payload?.targetId
+            console.log(`📤 Offer relayed in room ${clientRoomId} to ${targetId}`)
             const otherClients = roomManager.getClients(clientRoomId).filter(c => c !== ws)
-            otherClients.forEach(other => {
-              other.send(JSON.stringify({
-                type: 'offer',
-                payload: message.payload // { sdp }
-              }))
-            })
+            
+            if (targetId) {
+              // Send to specific peer
+              otherClients.forEach(other => {
+                const otherInfo = roomManager.getUserInfo(other)
+                if (otherInfo?.clientId === targetId) {
+                  other.send(JSON.stringify({
+                    type: 'offer',
+                    payload: {
+                      ...message.payload,
+                      fromId: clientPeerId,
+                      fromName: roomManager.getUserInfo(ws)?.name
+                    }
+                  }))
+                }
+              })
+            } else {
+              // Broadcast to all (for compatibility)
+              otherClients.forEach(other => {
+                other.send(JSON.stringify({
+                  type: 'offer',
+                  payload: {
+                    ...message.payload,
+                    fromId: clientPeerId,
+                    fromName: roomManager.getUserInfo(ws)?.name
+                  }
+                }))
+              })
+            }
           }
           break
 
         case 'answer':
           if (clientRoomId) {
-            console.log(`📥 Answer relayed in room ${clientRoomId}`)
+            const targetId = message.payload?.targetId
+            console.log(`📥 Answer relayed in room ${clientRoomId} to ${targetId}`)
             const otherClients = roomManager.getClients(clientRoomId).filter(c => c !== ws)
-            otherClients.forEach(other => {
-              other.send(JSON.stringify({
-                type: 'answer',
-                payload: message.payload // { sdp }
-              }))
-            })
+            
+            if (targetId) {
+              // Send to specific peer
+              otherClients.forEach(other => {
+                const otherInfo = roomManager.getUserInfo(other)
+                if (otherInfo?.clientId === targetId) {
+                  other.send(JSON.stringify({
+                    type: 'answer',
+                    payload: {
+                      ...message.payload,
+                      fromId: clientPeerId,
+                      fromName: roomManager.getUserInfo(ws)?.name
+                    }
+                  }))
+                }
+              })
+            }
           }
           break
 
         case 'ice_candidate':
           if (clientRoomId) {
-            console.log(`❄️ ICE candidate relayed in room ${clientRoomId}`)
+            const targetId = message.payload?.targetId
+            console.log(`❄️ ICE candidate relayed in room ${clientRoomId} to ${targetId}`)
             const otherClients = roomManager.getClients(clientRoomId).filter(c => c !== ws)
-            otherClients.forEach(other => {
-              other.send(JSON.stringify({
-                type: 'ice_candidate',
-                payload: message.payload // { candidate, sdpMLineIndex, sdpMid }
-              }))
-            })
+            
+            if (targetId) {
+              // Send to specific peer
+              otherClients.forEach(other => {
+                const otherInfo = roomManager.getUserInfo(other)
+                if (otherInfo?.clientId === targetId) {
+                  other.send(JSON.stringify({
+                    type: 'ice_candidate',
+                    payload: {
+                      ...message.payload,
+                      fromId: clientPeerId,
+                      fromName: roomManager.getUserInfo(ws)?.name
+                    }
+                  }))
+                }
+              })
+            }
           }
           break
 
@@ -280,30 +342,35 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('✗ WebSocket client disconnected')
     if (clientRoomId) {
+      const leftUserName = roomManager.getUserInfo(ws)?.name
       roomManager.leaveRoom(ws)
       
       // Log disconnect to database
       if (clientPeerId) {
         databaseService.endSession(clientPeerId, clientRoomId).catch(err => console.error('DB error:', err))
-        databaseService.logEvent(clientRoomId, 'peer_left', { peerId: clientPeerId }).catch(err => console.error('DB error:', err))
+        databaseService.logEvent(clientRoomId, 'peer_left', { peerId: clientPeerId, peerName: leftUserName }).catch(err => console.error('DB error:', err))
       }
       
-      // Notify remaining clients in room
+      // Notify remaining users in room
       const room = roomManager.getRoom(clientRoomId)
-      if (room) {
-        room.clients.forEach(client => {
+      if (room && room.users.size > 0) {
+        const remainingUsers = roomManager.getRoomUsers(clientRoomId)
+        room.users.forEach((userData, client) => {
           client.send(JSON.stringify({
-            type: 'peer_left',
+            type: 'user_left',
             payload: { 
               roomId: clientRoomId,
-              clientCount: room.clients.size
+              leftUserId: clientPeerId,
+              leftUserName: leftUserName,
+              userCount: room.users.size,
+              users: remainingUsers
             }
           }))
         })
       }
       
-      // Close room if empty
-      if (!room || room.clients.size === 0) {
+      // Close room if empty and log
+      if (!room || room.users.size === 0) {
         databaseService.closeRoom(clientRoomId).catch(err => console.error('DB error:', err))
       }
     }

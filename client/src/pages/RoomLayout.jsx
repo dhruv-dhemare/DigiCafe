@@ -1,22 +1,23 @@
 import { useState, useRef, useEffect } from 'react'
-import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, File, Download, Mic, Camera } from 'lucide-react'
+import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, File, Download, Mic, Camera, Users } from 'lucide-react'
 import Logo from '../components/Logo'
 import '../styles/room.css'
 import ws from '../services/websocket'
-import rtcPeer from '../services/rtcPeer'
+import multiPeerManager from '../services/multiPeerManager'
 
-export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRoom }) {
+export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode, onLeaveRoom }) {
   const [activeTab, setActiveTab] = useState('chat')
   const [connectionStatus, setConnectionStatus] = useState('Connecting...')
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isCopied, setIsCopied] = useState(false)
   const [localStream, setLocalStream] = useState(null)
-  const [remoteStream, setRemoteStream] = useState(null)
+  const [remotePeers, setRemotePeers] = useState(new Map()) // peerId -> { stream, userName }
   const [isVideoEnabled, setIsVideoEnabled] = useState(false)
   const [isAudioEnabled, setIsAudioEnabled] = useState(false)
-  const [dataChannelStatus, setDataChannelStatus] = useState('closed')
+  const [roomUsers, setRoomUsers] = useState([]) // All users in the room
+  const [myClientId, setMyClientId] = useState(null)
   
-  // Track if we've already sent the create/join message to avoid duplicates
+  // Track if we've already sent the create/join message
   const hasInitialized = useRef(false)
 
   // Connect to WebSocket on mount
@@ -32,111 +33,136 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
           
           if (isCreator) {
             console.log('🏠 Creating room...')
-            ws.send('create', {})
+            ws.send('create', { userName })
           } else if (roomCode) {
             console.log('👥 Joining room:', roomCode)
-            ws.send('join', { roomId: roomCode })
+            ws.send('join', { roomId: roomCode, userName })
           }
         }
         
         // Update status when connected
         ws.on('connected', () => {
-          setConnectionStatus('Connected')
+          setConnectionStatus('Connected to server')
         })
         
         // Handle room creation
         ws.on('room_created', (data) => {
-          console.log('🏠 Room created:', data.roomId)
+          console.log('🏠 Room created:', data.roomId, 'Client ID:', data.clientId)
           setRoomCode(data.roomId)
-          setConnectionStatus('Connected (Waiting for peer...)')
+          setMyClientId(data.clientId)
+          setRoomUsers(data.users || [])
+          setConnectionStatus('Room created, waiting for others...')
         })
         
-        // Handle join confirmation - Initialize as responder while waiting for offer
+        // Handle join confirmation
         ws.on('join_confirmed', (data) => {
-          console.log('✓ Joined room:', data.roomId)
-          console.log('👥 Initializing as responder, waiting for offer...')
-          setConnectionStatus('Connected (Waiting for offer...)')
-          rtcPeer.initializePeerConnection(false) // Initialize as responder now, before offer arrives
+          console.log('✓ Joined room:', data.roomId, 'Client ID:', data.clientId)
+          setRoomCode(data.roomId)
+          setMyClientId(data.clientId)
+          setRoomUsers(data.users || [])
+          setConnectionStatus('Joined room')
+          
+          // Initialize peer connections with existing users
+          const otherUsers = data.users.filter(u => u.clientId !== data.clientId)
+          otherUsers.forEach(user => {
+            console.log(`👥 Initializing peer connection as responder for ${user.name}`)
+            multiPeerManager.initializePeerConnection(user.clientId, false, user.name)
+          })
         })
         
-        // When peer joins: Initialize WebRTC as initiator
-        ws.on('peer_joined', (data) => {
-          console.log('👥 Peer joined, initializing WebRTC as initiator...')
-          setConnectionStatus('Negotiating...')
-          // Only initialize if not already done
-          if (!rtcPeer.peerConnection) {
-            rtcPeer.initializePeerConnection(true) // We initiate the offer
+        // When a new user joins
+        ws.on('user_joined', (data) => {
+          console.log('👥 New user joined:', data.newUser.name)
+          setRoomUsers(data.users || [])
+          setConnectionStatus(`${data.newUser.name} joined the room`)
+          
+          // Initialize as initiator for the new user
+          if (myClientId && data.newUser.clientId !== myClientId) {
+            console.log(`👥 Initializing peer connection as initiator for ${data.newUser.name}`)
+            multiPeerManager.initializePeerConnection(data.newUser.clientId, true, data.newUser.name)
           }
+        })
+        
+        // When a user leaves
+        ws.on('user_left', (data) => {
+          console.log('👋 User left:', data.leftUserName)
+          setRoomUsers(data.users || [])
+          setConnectionStatus(`${data.leftUserName} left the room`)
+          
+          // Close peer connection
+          multiPeerManager.closePeer(data.leftUserId)
+          
+          // Update remote peers
+          setRemotePeers(prev => {
+            const updated = new Map(prev)
+            updated.delete(data.leftUserId)
+            return updated
+          })
         })
         
         // Handle incoming offer
         ws.on('offer', (data) => {
-          console.log('📤 Received offer from peer')
-          rtcPeer.handleOffer(data.sdp)
+          console.log('📤 Received offer from', data.fromName)
+          multiPeerManager.handleOffer(data.fromId, data.sdp, data.fromName)
         })
         
         // Handle incoming answer
         ws.on('answer', (data) => {
-          console.log('📥 Received answer from peer')
-          rtcPeer.handleAnswer(data.sdp)
+          console.log('📥 Received answer from', data.fromName)
+          multiPeerManager.handleAnswer(data.fromId, data.sdp)
         })
         
         // Handle incoming ICE candidate
         ws.on('ice_candidate', (data) => {
-          console.log('❄️ Received ICE candidate from peer')
-          rtcPeer.handleIceCandidate(data)
+          console.log('❄️ Received ICE candidate from', data.fromId)
+          multiPeerManager.handleIceCandidate(
+            data.fromId,
+            data.candidate,
+            data.sdpMLineIndex,
+            data.sdpMid,
+            data.usernameFragment
+          )
         })
         
         // Handle peer connection state changes
-        rtcPeer.on('connected', () => {
-          setConnectionStatus('P2P Connected ✓')
+        multiPeerManager.on('peer_connected', (data) => {
+          console.log(`✓ Connected to ${data.userName}`)
+          setConnectionStatus(`Connected to ${data.userName}`)
         })
         
-        rtcPeer.on('connection_failed', () => {
-          setConnectionStatus('P2P Connection Failed')
+        multiPeerManager.on('peer_disconnected', (data) => {
+          console.log(`✗ Disconnected from ${data.userName}`)
+          setRemotePeers(prev => {
+            const updated = new Map(prev)
+            updated.delete(data.peerId)
+            return updated
+          })
         })
 
         // Handle remote stream
-        rtcPeer.on('remote_stream', (stream) => {
-          console.log('🎥 Remote stream received')
-          setRemoteStream(stream)
+        multiPeerManager.on('remote_stream', (data) => {
+          console.log(`🎥 Remote stream received from ${data.userName}`)
+          setRemotePeers(prev => new Map(prev).set(data.peerId, {
+            stream: data.stream,
+            userName: data.userName
+          }))
         })
 
-        // Handle data channel
-        rtcPeer.on('data_channel_open', () => {
-          console.log('📢 Data channel opened')
-          setDataChannelStatus('open')
-        })
-
-        rtcPeer.on('data_channel_close', () => {
-          console.log('📢 Data channel closed')
-          setDataChannelStatus('closed')
-        })
-
-        rtcPeer.on('data_channel_message', (message) => {
-          console.log('📢 Received via data channel:', message)
-        })
-        
-        rtcPeer.on('data_channel_error', (error) => {
-          console.error('📢 Data channel error:', error)
+        // Handle connection_state_change
+        multiPeerManager.on('connection_state_change', (data) => {
+          console.log(`Connection state for ${data.peerId}: ${data.state}`)
         })
         
         // Handle disconnection
         ws.on('disconnected', () => {
           setConnectionStatus('Disconnected')
-          rtcPeer.close()
-        })
-        
-        ws.on('peer_left', () => {
-          console.log('👋 Peer left')
-          setConnectionStatus('Peer Disconnected')
-          rtcPeer.close()
+          multiPeerManager.closeAll()
         })
         
         // Handle errors
         ws.on('error', (error) => {
           console.error('WebSocket error:', error)
-          setConnectionStatus('Error')
+          setConnectionStatus('Connection error')
         })
         
         ws.on('reconnect_failed', () => {
@@ -152,12 +178,12 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
 
     // Cleanup on unmount
     return () => {
-      rtcPeer.close()
+      multiPeerManager.closeAll()
       if (ws.isConnected()) {
         ws.disconnect()
       }
     }
-  }, [])
+  }, [isCreator, roomCode, userName])
 
   const handleCopyRoomCode = () => {
     navigator.clipboard.writeText(roomCode)
@@ -170,6 +196,7 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
   }
 
   const handleLeaveRoom = () => {
+    multiPeerManager.closeAll()
     if (onLeaveRoom) {
       onLeaveRoom()
     }
@@ -185,16 +212,10 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
           height: { ideal: 480 }
         }
       }
-      const stream = await rtcPeer.getUserMedia(constraints)
+      const stream = await multiPeerManager.getUserMedia(constraints)
       setLocalStream(stream)
       setIsAudioEnabled(true)
       setIsVideoEnabled(true)
-
-      // Add local stream to peer connection (handles renegotiation)
-      if (rtcPeer.peerConnection && rtcPeer.peerConnection.connectionState !== 'closed') {
-        console.log('🎥 Adding local stream to established peer connection')
-        await rtcPeer.addLocalStream(stream) // This now calls renegotiateConnection()
-      }
     } catch (error) {
       console.error('Failed to get user media:', error)
       alert('Failed to access camera/microphone. Please check permissions.')
@@ -204,7 +225,7 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
   // Stop local media stream
   const stopLocalMedia = () => {
     if (localStream) {
-      rtcPeer.stopLocalStream()
+      multiPeerManager.stopLocalStream()
       setLocalStream(null)
       setIsAudioEnabled(false)
       setIsVideoEnabled(false)
@@ -231,11 +252,18 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
     }
   }
 
-  // Send message via data channel
-  const sendDataChannelMessage = (message) => {
-    const result = rtcPeer.sendDataChannelMessage(message)
-    console.log('📤 sendDataChannelMessage result:', result, 'dataChannel state:', rtcPeer.dataChannel?.readyState)
-    return result
+  // Send message to all peers
+  const sendMessage = (message) => {
+    const peers = Array.from(remotePeers.keys())
+    let sent = false
+    
+    peers.forEach(peerId => {
+      if (multiPeerManager.sendMessage(peerId, 'chat', { type: 'text', text: message })) {
+        sent = true
+      }
+    })
+    
+    return sent
   }
 
   return (
@@ -276,6 +304,38 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
             >
               {isCopied ? <Check size={20} style={{ color: 'green' }} /> : <Copy size={20} />}
             </button>
+          </div>
+        </div>
+
+        {/* User List */}
+        <div className="user-list-section">
+          <div className="user-list-header">
+            <Users size={18} />
+            <span className="user-count">{roomUsers.length}/6</span>
+          </div>
+          <div className="user-list">
+            {roomUsers.map(user => (
+              <div key={user.clientId} className={`user-item ${user.clientId === myClientId ? 'me' : ''}`}>
+                <div className="user-avatar" style={{
+                  background: `hsl(${user.clientId.charCodeAt(0) * 10}, 70%, 50%)`,
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '2rem',
+                  height: '2rem',
+                  borderRadius: '50%',
+                  fontSize: '0.875rem',
+                  fontWeight: 'bold'
+                }}>
+                  {user.name.charAt(0).toUpperCase()}
+                </div>
+                <div className="user-name">
+                  {user.name}
+                  {user.clientId === myClientId && <span className="me-badge">(You)</span>}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -333,14 +393,15 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
       {/* Main Content Area */}
       <main className="room-main">
         <div className="room-content">
-          {activeTab === 'chat' && <ChatView onSendMessage={sendDataChannelMessage} />}
+          {activeTab === 'chat' && <ChatView onSendMessage={sendMessage} userName={userName} />}
           {activeTab === 'files' && <FilesView />}
           {activeTab === 'video' && (
             <VideoView 
               localStream={localStream}
-              remoteStream={remoteStream}
+              remotePeers={remotePeers}
               isVideoEnabled={isVideoEnabled}
               isAudioEnabled={isAudioEnabled}
+              userName={userName}
               onStartMedia={startLocalMedia}
               onStopMedia={stopLocalMedia}
               onToggleAudio={toggleAudio}
@@ -353,7 +414,7 @@ export default function RoomLayout({ roomCode, isCreator, setRoomCode, onLeaveRo
   )
 }
 
-function ChatView({ onSendMessage }) {
+function ChatView({ onSendMessage, userName }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const messagesEndRef = useRef(null)
@@ -362,22 +423,26 @@ function ChatView({ onSendMessage }) {
   useEffect(() => {
     const handleMessage = (data) => {
       console.log('📥 ChatView received message:', data)
-      const text = typeof data === 'string' ? data : data.text
+      const text = data.text || data
+      const peerId = data.peerId || 'unknown'
+      
       const newMessage = {
         id: Date.now(),
         text: text,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        sender: 'peer'
+        sender: 'peer',
+        peerId: peerId,
+        peerName: 'Peer' // This will be updated if we track it
       }
-      console.log('📥 Adding peer message to chat:', newMessage)
+      
       setMessages(prev => [...prev, newMessage])
     }
 
-    // Listen via data channel
-    rtcPeer.on('data_channel_text', handleMessage)
+    // Listen for text messages from peers
+    multiPeerManager.on('text_message', handleMessage)
 
     return () => {
-      rtcPeer.off('data_channel_text', handleMessage)
+      multiPeerManager.off('text_message', handleMessage)
     }
   }, [])
 
@@ -394,15 +459,16 @@ function ChatView({ onSendMessage }) {
         id: Date.now(),
         text: input,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        sender: 'you'
+        sender: 'you',
+        senderName: userName
       }
       setMessages(prev => [...prev, newMessage])
       
-      // Send through data channel
+      // Send through data channels
       if (onSendMessage) {
         onSendMessage(input)
       } else {
-        // Fallback to WebSocket if data channel not available
+        // Fallback to WebSocket if data channels not available
         ws.send('chat_message', { text: input })
       }
       setInput('')
@@ -412,18 +478,21 @@ function ChatView({ onSendMessage }) {
   return (
     <div className="chat-view">
       <div className="chat-header">
-        <h2>Chat</h2>
-        <p className="chat-subtitle">Real-time peer messaging</p>
+        <h2>Group Chat</h2>
+        <p className="chat-subtitle">Real-time messaging</p>
       </div>
 
       <div className="chat-messages">
         {messages.length === 0 ? (
-          <div style={{ textAlign: 'center', color: '#999', padding: '20px' }}>
+          <div style={{ textAlign: 'center', color: '#999', padding: '2rem' }}>
             No messages yet. Start the conversation!
           </div>
         ) : (
           messages.map((msg) => (
             <div key={msg.id} className={`message ${msg.sender}`}>
+              {msg.sender === 'peer' && (
+                <div className="message-sender">{msg.peerName || 'Peer'}</div>
+              )}
               <div className="message-bubble">{msg.text}</div>
               <div className="message-time">{msg.time}</div>
             </div>
@@ -450,8 +519,8 @@ function ChatView({ onSendMessage }) {
 }
 
 function FilesView() {
-  const [sendingFiles, setSendingFiles] = useState({}) // fileId -> {name, progress, status}
-  const [receivedFiles, setReceivedFiles] = useState([]) // {fileId, name, blob, downloadUrl}
+  const [sendingFiles, setSendingFiles] = useState({})
+  const [receivedFiles, setReceivedFiles] = useState([])
   const fileInputRef = useRef(null)
 
   // Listen for file transfer events
@@ -462,7 +531,8 @@ function FilesView() {
         [data.fileId]: {
           name: data.fileName,
           progress: Math.round(data.progress),
-          status: 'uploading'
+          status: 'uploading',
+          peerId: data.peerId
         }
       }))
     }
@@ -478,44 +548,12 @@ function FilesView() {
       }))
     }
 
-    const handleFileReceiveProgress = (data) => {
-      setSendingFiles(prev => ({
-        ...prev,
-        [data.fileId]: {
-          name: data.fileName,
-          progress: Math.round(data.progress),
-          status: 'downloading'
-        }
-      }))
-    }
-
-    const handleFileReceived = (data) => {
-      const downloadUrl = URL.createObjectURL(data.blob)
-      setReceivedFiles(prev => [...prev, {
-        fileId: data.fileId,
-        name: data.fileName,
-        blob: data.blob,
-        downloadUrl,
-        status: 'complete'
-      }])
-
-      setSendingFiles(prev => {
-        const updated = { ...prev }
-        delete updated[data.fileId]
-        return updated
-      })
-    }
-
-    rtcPeer.on('file_send_progress', handleFileSendProgress)
-    rtcPeer.on('file_sent', handleFileSent)
-    rtcPeer.on('file_receive_progress', handleFileReceiveProgress)
-    rtcPeer.on('file_received', handleFileReceived)
+    multiPeerManager.on('file_send_progress', handleFileSendProgress)
+    multiPeerManager.on('file_sent', handleFileSent)
 
     return () => {
-      rtcPeer.off('file_send_progress', handleFileSendProgress)
-      rtcPeer.off('file_sent', handleFileSent)
-      rtcPeer.off('file_receive_progress', handleFileReceiveProgress)
-      rtcPeer.off('file_received', handleFileReceived)
+      multiPeerManager.off('file_send_progress', handleFileSendProgress)
+      multiPeerManager.off('file_sent', handleFileSent)
     }
   }, [])
 
@@ -524,17 +562,9 @@ function FilesView() {
 
     for (let file of files) {
       try {
-        await rtcPeer.sendFile(file)
+        await multiPeerManager.sendFile(file)
       } catch (error) {
         console.error('Error sending file:', error)
-        setSendingFiles(prev => ({
-          ...prev,
-          [file.name]: {
-            name: file.name,
-            progress: 0,
-            status: 'error'
-          }
-        }))
       }
     }
   }
@@ -542,8 +572,7 @@ function FilesView() {
   const handleDrop = (e) => {
     e.preventDefault()
     e.stopPropagation()
-    const files = e.dataTransfer.files
-    handleFileSelect(files)
+    handleFileSelect(e.dataTransfer.files)
   }
 
   const handleBrowseClick = () => {
@@ -551,39 +580,23 @@ function FilesView() {
   }
 
   const handleInputChange = (e) => {
-    const files = e.target.files
-    handleFileSelect(files)
+    handleFileSelect(e.target.files)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
   }
 
-  const downloadFile = (file) => {
-    const link = document.createElement('a')
-    link.href = file.downloadUrl
-    link.download = file.name
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
-
-  const allFiles = [
-    ...Object.entries(sendingFiles).map(([fileId, data]) => ({
-      id: fileId,
-      ...data,
-      type: 'sending'
-    })),
-    ...receivedFiles.map(file => ({
-      ...file,
-      type: 'received'
-    }))
-  ]
+  const allFiles = Object.entries(sendingFiles).map(([fileId, data]) => ({
+    id: fileId,
+    ...data,
+    type: 'sending'
+  }))
 
   return (
     <div className="files-view">
       <div className="files-header">
         <h2>Files</h2>
-        <p className="files-subtitle">Drag & drop or click to share</p>
+        <p className="files-subtitle">Share with group</p>
       </div>
 
       <input
@@ -608,7 +621,7 @@ function FilesView() {
 
       <div className="files-list">
         {allFiles.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '20px', color: '#888' }}>
+          <div style={{ textAlign: 'center', padding: '2rem', color: '#888' }}>
             No files yet
           </div>
         ) : (
@@ -617,6 +630,9 @@ function FilesView() {
               <div className="file-icon"><File size={24} /></div>
               <div className="file-info">
                 <div className="file-name">{file.name}</div>
+                <div className="file-sender">
+                  {file.type === 'sending' ? 'Sending...' : `from ${file.senderName || 'Unknown'}`}
+                </div>
                 <div className="file-size">
                   {file.progress}% · {file.status}
                 </div>
@@ -624,23 +640,11 @@ function FilesView() {
                   <div className="progress-bar">
                     <div
                       className="progress-fill"
-                      style={{
-                        width: `${file.progress}%`,
-                        backgroundColor: file.type === 'receiving' ? '#4CAF50' : '#2196F3'
-                      }}
+                      style={{ width: `${file.progress}%` }}
                     ></div>
                   </div>
                 )}
               </div>
-              {file.type === 'received' && file.status === 'complete' && (
-                <button
-                  className="file-action"
-                  onClick={() => downloadFile(file)}
-                  title="Download file"
-                >
-                  <Download size={20} />
-                </button>
-              )}
             </div>
           ))
         )}
@@ -651,23 +655,27 @@ function FilesView() {
 
 function VideoView({
   localStream,
-  remoteStream,
+  remotePeers,
   isVideoEnabled,
   isAudioEnabled,
+  userName,
   onStartMedia,
   onStopMedia,
   onToggleAudio,
   onToggleVideo
 }) {
-  const remoteVideoRef = useRef(null)
   const localVideoRef = useRef(null)
+  const remoteVideoRefs = useRef(new Map())
 
   // Update video elements when streams change
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream
-    }
-  }, [remoteStream])
+    remotePeers.forEach((peerData, peerId) => {
+      const ref = remoteVideoRefs.current.get(peerId)
+      if (ref && peerData.stream) {
+        ref.srcObject = peerData.stream
+      }
+    })
+  }, [remotePeers])
 
   useEffect(() => {
     if (localVideoRef.current && localStream) {
@@ -675,47 +683,57 @@ function VideoView({
     }
   }, [localStream])
 
+  const setRemoteVideoRef = (peerId, ref) => {
+    if (ref) {
+      remoteVideoRefs.current.set(peerId, ref)
+    } else {
+      remoteVideoRefs.current.delete(peerId)
+    }
+  }
+
   return (
     <div className="video-view">
       <div className="video-header">
         <h2>Video Call</h2>
-        <p className="video-subtitle">Peer-to-peer connection</p>
-        {localStream && <p style={{ fontSize: '12px', color: '#888' }}>📹 Camera: {isVideoEnabled ? 'ON' : 'OFF'} | 🎤 Mic: {isAudioEnabled ? 'ON' : 'OFF'}</p>}
+        <p className="video-subtitle">Group video conference</p>
+        {localStream && <p style={{ fontSize: '0.875rem', color: '#888' }}>📹 Camera: {isVideoEnabled ? 'ON' : 'OFF'} | 🎤 Mic: {isAudioEnabled ? 'ON' : 'OFF'}</p>}
       </div>
 
-      <div className="video-container">
-        {remoteStream ? (
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            style={{ width: '100%', backgroundColor: '#000', borderRadius: '8px' }}
-          />
-        ) : (
-          <div className="video-placeholder">
-            <div className="video-icon"><Video size={48} /></div>
-            <div className="video-status">{localStream ? 'Waiting for peer video...' : 'Start video to begin'}</div>
-            <div className="video-info">Peer video will appear here</div>
+      <div className="video-grid">
+        {/* Local Video */}
+        {localStream ? (
+          <div className="video-tile local">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+            />
+            <div className="video-label">{userName} (You)</div>
           </div>
-        )}
+        ) : null}
 
-        {localStream && (
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{
-              position: 'absolute',
-              bottom: '20px',
-              right: '20px',
-              width: '150px',
-              height: '150px',
-              backgroundColor: '#000',
-              borderRadius: '8px',
-              border: '2px solid #00d4ff'
-            }}
-          />
+        {/* Remote Videos */}
+        {Array.from(remotePeers.entries()).map(([peerId, peerData]) => (
+          <div key={peerId} className="video-tile remote">
+            <video
+              ref={(ref) => setRemoteVideoRef(peerId, ref)}
+              autoPlay
+              playsInline
+              style={{ width: '100%', height: '100%', objectFit: 'cover', backgroundColor: '#000' }}
+            />
+            <div className="video-label">{peerData.userName}</div>
+          </div>
+        ))}
+
+        {/* Placeholder for empty slots */}
+        {!localStream && remotePeers.size === 0 && (
+          <div className="video-placeholder-grid">
+            <div className="video-icon"><Video size={48} /></div>
+            <div className="video-status">Start video to begin</div>
+            <div className="video-info">Waiting for participants...</div>
+          </div>
         )}
       </div>
 
