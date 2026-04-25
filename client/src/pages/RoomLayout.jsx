@@ -689,12 +689,52 @@ function FilesView() {
       }))
     }
 
+    const handleFileReceiveProgress = (data) => {
+      setReceivedFiles(prev => {
+        const existing = prev.find(f => f.id === data.fileId)
+        if (existing) {
+          return prev.map(f => f.id === data.fileId ? { ...f, progress: data.progress } : f)
+        }
+        return [...prev, {
+          id: data.fileId,
+          name: data.fileName,
+          progress: data.progress,
+          status: 'downloading',
+          senderName: data.peerId || 'Peer'
+        }]
+      })
+    }
+
+    const handleFileReceived = (data) => {
+      const url = URL.createObjectURL(data.blob)
+      setReceivedFiles(prev => {
+        const existing = prev.find(f => f.id === data.fileId)
+        if (existing) {
+          return prev.map(f => 
+            f.id === data.fileId ? { ...f, progress: 100, status: 'complete', downloadUrl: url } : f
+          )
+        }
+        return [...prev, {
+          id: data.fileId,
+          name: data.fileName,
+          progress: 100,
+          status: 'complete',
+          senderName: data.peerId || 'Peer',
+          downloadUrl: url
+        }]
+      })
+    }
+
     multiPeerManager.on('file_send_progress', handleFileSendProgress)
     multiPeerManager.on('file_sent', handleFileSent)
+    multiPeerManager.on('file_receive_progress', handleFileReceiveProgress)
+    multiPeerManager.on('file_received', handleFileReceived)
 
     return () => {
       multiPeerManager.off('file_send_progress', handleFileSendProgress)
       multiPeerManager.off('file_sent', handleFileSent)
+      multiPeerManager.off('file_receive_progress', handleFileReceiveProgress)
+      multiPeerManager.off('file_received', handleFileReceived)
     }
   }, [])
 
@@ -727,11 +767,17 @@ function FilesView() {
     }
   }
 
-  const allFiles = Object.entries(sendingFiles).map(([fileId, data]) => ({
-    id: fileId,
-    ...data,
-    type: 'sending'
-  }))
+  const allFiles = [
+    ...Object.entries(sendingFiles).map(([fileId, data]) => ({
+      id: fileId,
+      ...data,
+      type: 'sending'
+    })),
+    ...receivedFiles.map(data => ({
+      ...data,
+      type: 'received'
+    }))
+  ]
 
   return (
     <div className="files-view">
@@ -784,6 +830,11 @@ function FilesView() {
                       style={{ width: `${file.progress}%` }}
                     ></div>
                   </div>
+                )}
+                {file.status === 'complete' && file.downloadUrl && (
+                  <a href={file.downloadUrl} download={file.name} className="download-btn" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginTop: '10px', padding: '6px 14px', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '500', cursor: 'pointer', transition: 'all 0.2s ease' }}>
+                    <Download size={14} /> Download
+                  </a>
                 )}
               </div>
             </div>

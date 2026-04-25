@@ -7,6 +7,7 @@ class MultiPeerManager {
     this.localStream = null
     this.listeners = {}
     this.iceCandidateQueue = new Map() // peerId -> [candidates]
+    this._receivingFiles = new Map() // fileId -> fileData
     this.iceServers = [
       // Primary STUN servers (Google)
       { urls: ['stun:stun.l.google.com:19302'] },
@@ -190,6 +191,9 @@ class MultiPeerManager {
       await peerData.connection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }))
       console.log(`📤 Received offer from ${peerId}, sending answer`)
 
+      // Flush any queued ICE candidates for this peer since remote description is now set
+      this.flushIceCandidateQueue(peerId)
+
       // NOTE: Responder MUST NOT create data channels - only initiator does
       // Responder receives them via ondatachannel event
       // Creating them on both sides causes conflicts and channels won't work
@@ -218,6 +222,9 @@ class MultiPeerManager {
     try {
       await peerData.connection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }))
       console.log(`📥 Received answer from ${peerId}`)
+      
+      // Flush any queued ICE candidates for this peer since remote description is now set
+      this.flushIceCandidateQueue(peerId)
     } catch (error) {
       console.error(`Error handling answer from ${peerId}:`, error)
     }
@@ -225,10 +232,11 @@ class MultiPeerManager {
 
   // Handle ICE candidate
   async handleIceCandidate(peerId, candidate, sdpMLineIndex, sdpMid, usernameFragment) {
-    const peerData = this.peers.get(peerId)
+    let peerData = this.peers.get(peerId)
     
-    if (!peerData) {
-      console.log(`Queueing ICE candidate for ${peerId}`)
+    // If peerData doesn't exist yet OR remote description is not set, we MUST queue
+    if (!peerData || !peerData.connection.remoteDescription) {
+      console.log(`⏳ Queueing ICE candidate for ${peerId} (remote description not ready)`)
       if (!this.iceCandidateQueue.has(peerId)) {
         this.iceCandidateQueue.set(peerId, [])
       }
@@ -243,6 +251,31 @@ class MultiPeerManager {
       console.log(`❄️ Added ICE candidate for ${peerId}`)
     } catch (error) {
       console.error(`Error adding ICE candidate for ${peerId}:`, error)
+    }
+  }
+
+  // Flush queued ICE candidates for a peer
+  async flushIceCandidateQueue(peerId) {
+    if (!this.iceCandidateQueue.has(peerId)) return
+    
+    const candidates = this.iceCandidateQueue.get(peerId)
+    const peerData = this.peers.get(peerId)
+    
+    if (candidates.length > 0 && peerData && peerData.connection.remoteDescription) {
+      console.log(`📬 Flushing ${candidates.length} queued ICE candidates for ${peerId}`)
+      
+      for (const candidateData of candidates) {
+        try {
+          await peerData.connection.addIceCandidate(
+            new RTCIceCandidate(candidateData)
+          )
+        } catch (error) {
+          console.error(`Error flushing ICE candidate for ${peerId}:`, error)
+        }
+      }
+      
+      // Clear the queue for this peer
+      this.iceCandidateQueue.delete(peerId)
     }
   }
 
@@ -280,14 +313,19 @@ class MultiPeerManager {
     dataChannel.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data)
-        console.log(`� Message received on \"${dataChannel.label}\" from ${peerId}:`, message)
+        
+        // Handle file-related messages securely directly
+        if (message.type && message.type.startsWith('file_')) {
+          this.handleFileMessage(peerId, message)
+          return
+        }
+
+        console.log(` Message received on \"${dataChannel.label}\" from ${peerId}:`, message)
         this.emit('data_channel_message', { peerId, message, label: dataChannel.label })
         
         // Emit specific events based on message type
         if (message.type === 'text') {
           this.emit('text_message', { peerId, text: message.text })
-        } else if (message.type === 'file') {
-          this.emit('file_chunk', { peerId, data: message })
         }
       } catch (error) {
         console.error(`Error parsing message from ${peerId}:`, error)
@@ -410,6 +448,72 @@ class MultiPeerManager {
     })
 
     this.emit('file_sent', { peerId, fileId, fileName: file.name })
+  }
+
+  // Handle incoming file messages dynamically reconstructing Blob
+  handleFileMessage(peerId, message) {
+    if (message.type === 'file_start') {
+      console.log(`📥 Receiving file from ${peerId}: ${message.fileName} (${message.fileSize} bytes)`)
+      this._receivingFiles.set(message.fileId, {
+        name: message.fileName,
+        size: message.fileSize,
+        type: message.mimeType,
+        chunks: new Array(message.totalChunks).fill(null),
+        received: 0,
+        totalChunks: message.totalChunks,
+        senderId: peerId
+      })
+    } else if (message.type === 'file_chunk') {
+      const fileData = this._receivingFiles.get(message.fileId)
+      if (fileData) {
+        if (!fileData.chunks[message.chunkIndex]) {
+          fileData.chunks[message.chunkIndex] = new Uint8Array(message.data)
+          fileData.received++
+        }
+
+        this.emit('file_receive_progress', {
+          peerId,
+          fileId: message.fileId,
+          fileName: fileData.name,
+          chunkIndex: message.chunkIndex,
+          totalChunks: fileData.totalChunks,
+          progress: Math.round((fileData.received / fileData.totalChunks) * 100)
+        })
+      }
+    } else if (message.type === 'file_end') {
+      const fileData = this._receivingFiles.get(message.fileId)
+      if (fileData) {
+        console.log(`📥 File end received. Chunks received: ${fileData.received}/${fileData.totalChunks}`)
+        
+        if (fileData.received === fileData.totalChunks) {
+          const fullBuffer = new Uint8Array(fileData.size)
+          let offset = 0
+          
+          for (let i = 0; i < fileData.chunks.length; i++) {
+            if (fileData.chunks[i]) {
+              fullBuffer.set(fileData.chunks[i], offset)
+              offset += fileData.chunks[i].length
+            } else {
+              console.warn(`⚠️ Missing chunk ${i} for file ${fileData.name}`)
+            }
+          }
+
+          const blob = new Blob([fullBuffer], { type: fileData.type })
+          console.log(`✓ File received successfully: ${fileData.name}`)
+          
+          this.emit('file_received', {
+            peerId,
+            fileId: message.fileId,
+            fileName: fileData.name,
+            blob
+          })
+
+          this._receivingFiles.delete(message.fileId)
+        } else {
+          console.warn(`⚠️ File incomplete: received ${fileData.received}/${fileData.totalChunks} chunks`)
+        }
+      }
+    }
   }
 
   // Get peer info
