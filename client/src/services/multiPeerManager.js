@@ -186,9 +186,9 @@ class MultiPeerManager {
       await peerData.connection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp }))
       console.log(`📤 Received offer from ${peerId}, sending answer`)
 
-      // Create data channels for responder
-      this.createDataChannel(peerId, 'chat')
-      this.createDataChannel(peerId, 'files')
+      // NOTE: Responder MUST NOT create data channels - only initiator does
+      // Responder receives them via ondatachannel event
+      // Creating them on both sides causes conflicts and channels won't work
 
       const answer = await peerData.connection.createAnswer()
       await peerData.connection.setLocalDescription(answer)
