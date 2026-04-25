@@ -45,6 +45,16 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
           setConnectionStatus('Connected to server')
         })
         
+        // Handle server errors (join/create failures)
+        ws.on('error', (data) => {
+          console.error('❌ Server error:', data)
+          const errorMsg = data.message || 'Server error'
+          setConnectionStatus(`❌ ${errorMsg}`)
+          if (data.available_rooms) {
+            console.log('📋 Available rooms:', data.available_rooms)
+          }
+        })
+        
         // Handle room creation
         ws.on('room_created', (data) => {
           console.log('🏠 Room created:', data.roomId, 'Client ID:', data.clientId)

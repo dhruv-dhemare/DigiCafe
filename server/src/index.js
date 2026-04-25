@@ -78,6 +78,26 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
+// Debug endpoint - list active rooms
+app.get('/api/debug/rooms', (req, res) => {
+  const rooms = Array.from(roomManager.rooms.entries()).map(([roomId, room]) => ({
+    roomId,
+    userCount: room.userCount,
+    users: Array.from(room.users.values()).map(u => ({ 
+      name: u.name, 
+      clientId: u.clientId,
+      joinedAt: new Date(u.joinedAt).toISOString()
+    })),
+    createdAt: new Date(room.createdAt).toISOString(),
+    ageSeconds: Math.round((Date.now() - room.createdAt) / 1000)
+  }))
+  res.json({ 
+    activeRooms: rooms.length,
+    rooms,
+    timestamp: new Date().toISOString()
+  })
+})
+
 // Room stats endpoint
 app.get('/api/rooms/:roomCode/stats', async (req, res) => {
   try {
@@ -128,6 +148,8 @@ wss.on('connection', (ws) => {
           const newRoomId = roomManager.createRoom()
           const userName = message.payload?.userName || 'Creator'
           const createdJoin = roomManager.joinRoom(newRoomId, ws, userName)
+          
+          console.log(`📝 Room creation details: ID='${newRoomId}', User='${userName}', Success=${createdJoin.success}`)
           
           if (createdJoin && createdJoin.success) {
             clientRoomId = newRoomId
@@ -204,9 +226,15 @@ wss.on('connection', (ws) => {
               })
             }
           } else {
+            const errorMsg = joined?.error || 'Failed to join room'
+            console.error(`❌ Join failed for ${roomId}: ${errorMsg}`)
             ws.send(JSON.stringify({
               type: 'error',
-              payload: { message: 'Failed to join room. Room not found or full.' }
+              payload: { 
+                message: `Failed to join room: ${errorMsg}`,
+                roomId: roomId,
+                available_rooms: Array.from(roomManager.rooms.keys()).join(', ') || 'NONE'
+              }
             }))
           }
           break

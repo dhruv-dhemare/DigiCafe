@@ -30,17 +30,20 @@ class RoomManager {
 
   // Join a room
   joinRoom(roomId, ws, userName) {
+    // List available rooms for debugging
+    console.log(`📋 Available rooms: ${Array.from(this.rooms.keys()).join(', ') || 'NONE'}`)
+    
     if (!this.rooms.has(roomId)) {
-      console.warn(`Room not found: ${roomId}`)
-      return false
+      console.error(`❌ Room not found: ${roomId}. Available: ${Array.from(this.rooms.keys()).join(', ') || 'NONE'}`)
+      return { success: false, error: 'Room not found' }
     }
 
     const room = this.rooms.get(roomId)
     
     // Check if room is full (max 6 users)
     if (room.users.size >= 6) {
-      console.warn(`Room full: ${roomId}`)
-      return false
+      console.warn(`❌ Room full: ${roomId} (${room.users.size}/6)`)
+      return { success: false, error: 'Room is full' }
     }
 
     const clientId = this.generateClientId()
