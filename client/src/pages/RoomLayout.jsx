@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, File, Download, Mic, Camera, Users, Smile } from 'lucide-react'
+import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, File, Download, Mic, Camera, Users, Smile, MonitorPlay } from 'lucide-react'
 import EmojiPicker from 'emoji-picker-react'
 import Logo from '../components/Logo'
 import WatchPartyView from '../components/WatchPartyView'
@@ -40,7 +40,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
     if (activeTab === 'files') setUnreadFilesCount(0)
     if (activeTab === 'video') setHasNewVideoUser(false)
   }, [activeTab])
-  
+
   // Track if we've already sent the create/join message
   const hasInitialized = useRef(false)
   const joinRetryCount = useRef(0)
@@ -59,27 +59,27 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       const errorMsg = data?.message || 'Server error'
       const roomId = data?.roomId || roomCode
       const availableRooms = data?.available_rooms || 'NONE'
-      
+
       setConnectionStatus(`❌ ${errorMsg}`)
-      
+
       console.log(`🔍 Debugging Info:`)
       console.log(`   Room attempted: ${roomId}`)
       console.log(`   Available rooms: ${availableRooms}`)
       console.log(`   Raw error data:`, data)
-      
+
       if (availableRooms && availableRooms !== 'NONE') {
         console.log('✅ Rooms available:', availableRooms)
       } else {
         console.log('⚠️ No rooms on server. The room may have expired or server restarted.')
-        
+
         // Auto-retry if join failed and we haven't exceeded max retries
         if (!isCreator && joinRetryCount.current < maxRetries) {
           const retryDelay = 2000 * (joinRetryCount.current + 1) // Exponential backoff: 2s, 4s, 6s
           joinRetryCount.current++
-          
+
           console.log(`🔄 Retrying join in ${retryDelay / 1000}s (Attempt ${joinRetryCount.current}/${maxRetries})`)
           setConnectionStatus(`⏳ Retrying... (${joinRetryCount.current}/${maxRetries})`)
-          
+
           joinRetryTimeoutRef.current = setTimeout(() => {
             console.log(`🔄 Retrying join for room: ${roomCode}`)
             ws.send('join', { roomId: roomCode, userName })
@@ -95,13 +95,13 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
 
     const handleRoomCreated = (data) => {
       console.log('🏠 Room created:', data.roomId, 'Client ID:', data.clientId)
-      
+
       // Reset retry count on successful room creation
       joinRetryCount.current = 0
       if (joinRetryTimeoutRef.current) {
         clearTimeout(joinRetryTimeoutRef.current)
       }
-      
+
       setRoomCode(data.roomId)
       setMyClientId(data.clientId)
       myClientIdRef.current = data.clientId
@@ -111,19 +111,19 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
 
     const handleJoinConfirmed = (data) => {
       console.log('✓ Joined room:', data.roomId, 'Client ID:', data.clientId)
-      
+
       // Reset retry count on successful join
       joinRetryCount.current = 0
       if (joinRetryTimeoutRef.current) {
         clearTimeout(joinRetryTimeoutRef.current)
       }
-      
+
       setRoomCode(data.roomId)
       setMyClientId(data.clientId)
       myClientIdRef.current = data.clientId
       setRoomUsers(data.users || [])
       setConnectionStatus('Joined room')
-      
+
       // Initialize peer connections with existing users
       const otherUsers = data.users.filter(u => u.clientId !== data.clientId)
       otherUsers.forEach(user => {
@@ -136,7 +136,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       console.log('👥 New user joined:', data.newUser.name)
       setRoomUsers(data.users || [])
       setConnectionStatus(`${data.newUser.name} joined the room`)
-      
+
       // Initialize as initiator for the new user
       if (myClientIdRef.current && data.newUser.clientId !== myClientIdRef.current) {
         console.log(`👥 Initializing peer connection as initiator for ${data.newUser.name}`)
@@ -148,11 +148,11 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       console.log('👋 User left:', data.leftUserName, `(${data.leftUserId})`)
       setRoomUsers(data.users || [])
       setConnectionStatus(`${data.leftUserName} left the room`)
-      
+
       // Close peer connection and clean up all references
       console.log(`🧹 Cleaning up peer: ${data.leftUserId}`)
       multiPeerManager.closePeer(data.leftUserId)
-      
+
       // Update both peer maps
       setRemotePeers(prev => {
         const updated = new Map(prev)
@@ -227,7 +227,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
 
     const handleRemoteStream = (data) => {
       console.log(`🎥 Remote stream received from ${data.userName}`)
-      
+
       if (watchPartyStreamIdRef.current === data.stream.id || watchPartyHost === data.peerId) {
         setWatchPartyStream(data.stream);
         setRemotePeers(prev => {
@@ -292,7 +292,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
         setUnreadChatCount(prev => prev + 1)
       }
     }
-    
+
     const handleFileNotification = () => {
       if (activeTabRef.current !== 'files') {
         setUnreadFilesCount(prev => prev + 1)
@@ -303,14 +303,14 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       if (data.isHosting) {
         setWatchPartyHost(data.peerId);
         watchPartyStreamIdRef.current = data.streamId;
-        
+
         // Find name
         setConnectedPeers(peers => {
           const peer = peers.get(data.peerId);
           if (peer) setWatchPartyHostName(peer.userName);
           return peers;
         });
-        
+
         // If stream arrived earlier, assign it now
         setRemotePeers(prev => {
           const peerData = prev.get(data.peerId);
@@ -344,11 +344,11 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       try {
         setConnectionStatus('Connecting...')
         await ws.connect()
-        
+
         // Create room if we're the creator, otherwise join (only once)
         if (!hasInitialized.current) {
           hasInitialized.current = true
-          
+
           if (isCreator) {
             console.log('🏠 Creating room...')
             ws.send('create', { userName })
@@ -371,7 +371,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       if (joinRetryTimeoutRef.current) {
         clearTimeout(joinRetryTimeoutRef.current)
       }
-      
+
       // Remove all event listeners
       ws.off('connected', handleConnected)
       ws.off('error', handleJoinError)
@@ -391,11 +391,11 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       multiPeerManager.off('peer_disconnected', handlePeerDisconnected)
       multiPeerManager.off('remote_stream', handleRemoteStream)
       multiPeerManager.off('connection_state_change', handleConnectionStateChange)
-      
+
       multiPeerManager.off('text_message', handleTextMessageNotification)
       multiPeerManager.off('file_received', handleFileNotification)
       multiPeerManager.off('watch_party_state', handleWatchPartyState)
-      
+
       multiPeerManager.closeAll()
       if (ws.isConnected()) {
         ws.disconnect()
@@ -479,12 +479,12 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
     console.log(`📤 Sending message to ${peers.length} connected peers: ${peersList.join(', ') || 'NONE'}`)
     console.log(`   Connected peers: ${peers.join(', ') || 'NONE'}`)
     let sent = false
-    
+
     if (peers.length === 0) {
       console.warn('⚠️ No connected peers to send message to (may still be connecting)')
       return false
     }
-    
+
     peers.forEach(peerId => {
       const channelOpen = multiPeerManager.sendMessage(peerId, 'chat', { type: 'text', text: message })
       if (channelOpen) {
@@ -494,14 +494,14 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
         console.warn(`⚠️ Data channel not open for peer ${peerId}`)
       }
     })
-    
+
     return sent
   }
 
   return (
     <div className="room-container">
       {/* Mobile Sidebar Toggle */}
-      <button 
+      <button
         className={`sidebar-toggle ${isSidebarOpen ? 'hidden-on-mobile' : ''}`}
         onClick={toggleSidebar}
         aria-label="Toggle sidebar"
@@ -514,7 +514,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
         {/* Logo Section */}
         <div className="sidebar-header">
           <Logo variant="small" />
-          <button 
+          <button
             className="close-sidebar"
             onClick={toggleSidebar}
             aria-label="Close sidebar"
@@ -528,7 +528,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
           <div className="room-label">ROOM</div>
           <div className="room-code-display">
             <span className="room-code">{roomCode}</span>
-            <button 
+            <button
               className={`copy-btn ${isCopied ? 'copied' : ''}`}
               onClick={handleCopyRoomCode}
               aria-label="Copy room code"
@@ -647,9 +647,9 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       {/* Main Content Area */}
       <main className="room-main">
         <div className="room-content" style={{ flexDirection: activeTab === 'watch-party' ? 'row' : 'column' }}>
-          
+
           <div style={{ display: activeTab === 'watch-party' ? 'flex' : 'none', height: '100%', flex: 1 }}>
-            <WatchPartyView 
+            <WatchPartyView
               isHosting={myClientId === watchPartyHost}
               hostId={watchPartyHost}
               hostName={watchPartyHostName}
@@ -671,12 +671,12 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
             />
           </div>
 
-          <div style={{ 
-            display: (activeTab === 'chat' || activeTab === 'watch-party') ? 'flex' : 'none', 
-            height: '100%', 
-            width: activeTab === 'watch-party' ? '350px' : '100%', 
+          <div style={{
+            display: (activeTab === 'chat' || activeTab === 'watch-party') ? 'flex' : 'none',
+            height: '100%',
+            width: activeTab === 'watch-party' ? '350px' : '100%',
             borderLeft: activeTab === 'watch-party' ? '1px solid var(--border-color)' : 'none',
-            flex: activeTab === 'watch-party' ? 'none' : 1 
+            flex: activeTab === 'watch-party' ? 'none' : 1
           }}>
             <ChatView onSendMessage={sendMessage} userName={userName} connectedPeers={connectedPeers} />
           </div>
@@ -685,7 +685,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
             <FilesView />
           </div>
           <div style={{ display: activeTab === 'video' ? 'flex' : 'none', height: '100%', width: '100%', flex: 1 }}>
-            <VideoView 
+            <VideoView
               localStream={localStream}
               remotePeers={remotePeers}
               isVideoEnabled={isVideoEnabled}
@@ -733,10 +733,10 @@ function ChatView({ onSendMessage, userName, connectedPeers }) {
       console.log('📥 ChatView received message:', data)
       const text = data.text || data
       const peerId = data.peerId || 'unknown'
-      
+
       // Look up peer name from connectedPeers
       const peerName = connectedPeers?.get(peerId)?.userName || 'Unknown User'
-      
+
       const newMessage = {
         id: Date.now(),
         text: text,
@@ -745,7 +745,7 @@ function ChatView({ onSendMessage, userName, connectedPeers }) {
         peerId: peerId,
         peerName: peerName
       }
-      
+
       console.log(`✓ Message from ${peerName}: ${text}`)
       setMessages(prev => [...prev, newMessage])
     }
@@ -775,7 +775,7 @@ function ChatView({ onSendMessage, userName, connectedPeers }) {
         senderName: userName
       }
       setMessages(prev => [...prev, newMessage])
-      
+
       // Send through data channels
       if (onSendMessage) {
         onSendMessage(input)
@@ -825,9 +825,9 @@ function ChatView({ onSendMessage, userName, connectedPeers }) {
 
       <form onSubmit={handleSendMessage} className="chat-input-form">
         <div className="emoji-container" ref={pickerRef}>
-          <button 
-            type="button" 
-            className="emoji-btn" 
+          <button
+            type="button"
+            className="emoji-btn"
             onClick={() => setShowEmojiPicker(!showEmojiPicker)}
             aria-label="Add emoji"
           >
@@ -906,7 +906,7 @@ function FilesView() {
       setReceivedFiles(prev => {
         const existing = prev.find(f => f.id === data.fileId)
         if (existing) {
-          return prev.map(f => 
+          return prev.map(f =>
             f.id === data.fileId ? { ...f, progress: 100, status: 'complete', downloadUrl: url } : f
           )
         }
