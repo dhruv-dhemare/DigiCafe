@@ -1,175 +1,72 @@
-# WebRTC File Sharing Application
+# BifrostMesh
 
-Full-stack WebRTC file sharing application with React frontend and Node.js backend.
+BifrostMesh is a real-time, multi-user WebRTC application that allows users to instantly create and join rooms for group video calls, real-time messaging, and high-speed peer-to-peer file sharing.
 
-## Project Structure
+## Features
 
-```
-webrtc/
-├── client/                 # React + Vite frontend
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── styles/
-│   │   ├── utils/
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   ├── public/
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── .env.local
-│   └── .gitignore
-├── server/                 # Node.js + Express backend
-│   ├── src/
-│   │   ├── config/
-│   │   │   ├── index.js    # Configuration
-│   │   │   └── database.js # Database connection
-│   │   ├── routes/         # API routes
-│   │   ├── services/       # Business logic
-│   │   ├── websocket/      # WebSocket setup
-│   │   └── index.js        # Main server file
-│   ├── setup.sql           # Database initialization
-│   ├── package.json
-│   ├── .env
-│   ├── .env.example
-│   └── .gitignore
-└── package.json            # Root package.json (workspaces)
-```
+- **Multi-Peer Video Conferencing**: Join rooms with up to 6 participants for seamless video calls.
+- **Real-Time Group Chat**: Fast, reliable chat with native Emoji picker support. WhatsApp-style standalone large emojis!
+- **P2P File Sharing**: Direct peer-to-peer drag-and-drop file sharing. Share files of any size without uploading to a centralized server.
+- **Instant Rooms**: Generate instant shareable room codes and links. 
+- **Modern Premium UI**: Sleek dark mode, custom gradients, responsive design, and smooth animations.
 
-## Quick Start
+## Tech Stack
+
+- **Frontend**: React.js, Vite, Vanilla CSS, Lucide Icons, emoji-picker-react.
+- **Backend/Signaling Server**: Node.js, Express, Socket.io (Used purely for WebRTC signaling and establishing peer connections).
+- **WebRTC**: Real-time media streams and data channels.
+
+## Getting Started
 
 ### Prerequisites
-
-- Node.js 16+
-- PostgreSQL 12+
+- Node.js (v16 or higher)
 - npm or yarn
 
 ### Installation
 
-1. **Install all dependencies:**
-
+1. Clone the repository
 ```bash
-npm run install-all
+git clone <your-repo-url>
+cd WEBRTC
 ```
 
-Or manually:
-
+2. Install Backend Dependencies
 ```bash
+cd server
 npm install
-npm install --workspace=client
-npm install --workspace=server
 ```
 
-2. **Setup PostgreSQL database:**
-
+3. Install Frontend Dependencies
 ```bash
-psql -U postgres -f server/setup.sql
+cd ../client
+npm install
 ```
 
-Or connect to PostgreSQL and run the SQL commands in `server/setup.sql`.
+### Running the Application Locally
 
-3. **Configure environment variables:**
+You will need to run both the signaling server and the client development server.
 
-Backend server `.env` is pre-configured for development. Modify if needed:
-
-```
-PORT=3000
-JWT_SECRET=dev_secret_key_12345
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/webrtc_app
-NODE_ENV=development
-```
-
-Frontend `.env.local`:
-
-```
-VITE_API_URL=http://localhost:3000
-VITE_WS_URL=ws://localhost:3000
-```
-
-### Development
-
-**Option 1: Run both client and server together**
-
+1. Start the Signaling Server
 ```bash
+cd server
 npm run dev
 ```
 
-**Option 2: Run separately**
-
-Terminal 1 - Frontend:
-
+2. Start the React Client
 ```bash
-npm run dev:client
+cd client
+npm run dev
 ```
 
-Terminal 2 - Backend:
+The application will now be running on `http://localhost:5173`. 
 
-```bash
-npm run dev:server
-```
+## Usage
 
-### Build
+1. Open the app and click **Create Room**.
+2. Enter your name and copy the instant join link or room code.
+3. Share the link with your peers.
+4. Peers joining the link will be prompted for their name and instantly added to your Mesh network!
 
-```bash
-npm run build:client
-npm run build:server
-```
+## License
 
-### Start Production Server
-
-```bash
-npm run start:server
-```
-
-## Environment Variables
-
-### Backend (.env)
-
-- `PORT` - Server port (default: 3000)
-- `JWT_SECRET` - Secret key for JWT tokens
-- `DATABASE_URL` - PostgreSQL connection string
-- `NODE_ENV` - Environment (development/production)
-
-### Frontend (.env.local)
-
-- `VITE_API_URL` - Backend API URL
-- `VITE_WS_URL` - WebSocket server URL
-
-## Dependencies
-
-### Frontend
-
-- **react** - UI framework
-- **vite** - Build tool and dev server
-- **@vitejs/plugin-react** - React plugin for Vite
-
-### Backend
-
-- **express** - Web framework
-- **ws** - WebSocket library
-- **jsonwebtoken** - JWT token generation
-- **pg** - PostgreSQL client
-- **cors** - CORS middleware
-- **dotenv** - Environment variable management
-- **nodemon** - Development auto-restart (dev only)
-
-## Database Schema
-
-### rooms table
-
-```sql
-CREATE TABLE rooms (
-  room_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## Next Steps
-
-1. Implement WebRTC signaling logic
-2. Add authentication service
-3. Build file transfer logic
-4. Create UI components
-5. Setup error handling and logging
+This project is licensed under the MIT License.
