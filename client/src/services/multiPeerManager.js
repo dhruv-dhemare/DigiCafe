@@ -120,14 +120,16 @@ class MultiPeerManager {
 
     // Handle remote stream
     peerConnection.ontrack = (event) => {
-      console.log(`🎥 Remote track received from ${peerId}:`, event.track.kind)
+      console.log(`🎥 Remote track received from ${peerId}:`, event.track.kind, 'streams:', event.streams.length)
       
-      if (!peerData.remoteStream) {
-        peerData.remoteStream = new MediaStream()
-      }
+      // Use the browser-provided stream so that different sources
+      // (webcam vs screen-share) produce distinct stream references.
+      const stream = (event.streams && event.streams[0]) 
+        ? event.streams[0] 
+        : (() => { const s = new MediaStream(); s.addTrack(event.track); return s; })();
       
-      peerData.remoteStream.addTrack(event.track)
-      this.emit('remote_stream', { peerId, stream: peerData.remoteStream, userName })
+      peerData.remoteStream = stream
+      this.emit('remote_stream', { peerId, stream, userName })
     }
 
     // Handle data channels (when peer opens them)
@@ -169,9 +171,13 @@ class MultiPeerManager {
     if (!peerData) return
 
     try {
-      // Create data channels for initiator
-      this.createDataChannel(peerId, 'chat')
-      this.createDataChannel(peerId, 'files')
+      // Only create data channels on initial connection, not during renegotiation
+      if (!peerData.dataChannels.has('chat')) {
+        this.createDataChannel(peerId, 'chat')
+      }
+      if (!peerData.dataChannels.has('files')) {
+        this.createDataChannel(peerId, 'files')
+      }
 
       const offer = await peerData.connection.createOffer({
         offerToReceiveAudio: true,

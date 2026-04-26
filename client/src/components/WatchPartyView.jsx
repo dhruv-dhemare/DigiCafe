@@ -13,10 +13,18 @@ export default function WatchPartyView({
   const videoRef = useRef(null);
 
   useEffect(() => {
-    if (videoRef.current && watchPartyStream) {
-      videoRef.current.srcObject = watchPartyStream;
+    const video = videoRef.current;
+    if (video && watchPartyStream) {
+      console.log('🎬 Setting watch party video srcObject, tracks:', watchPartyStream.getTracks().length);
+      video.srcObject = watchPartyStream;
+      // Mute for the host to prevent audio feedback; unmuted for viewers
+      video.muted = isHosting;
+      video.play().catch(err => console.warn('Watch party autoplay blocked:', err));
     }
-  }, [watchPartyStream]);
+    return () => {
+      if (video) video.srcObject = null;
+    };
+  }, [watchPartyStream, isHosting]);
 
   return (
     <div className="watch-party-container">
@@ -49,7 +57,6 @@ export default function WatchPartyView({
               ref={videoRef}
               autoPlay
               playsInline
-              controls={false}
               className="watch-party-video"
             />
           </div>

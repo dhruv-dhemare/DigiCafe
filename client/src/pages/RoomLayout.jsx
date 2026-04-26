@@ -668,6 +668,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
               }}
               onStopParty={() => {
                 multiPeerManager.stopWatchPartyStream();
+                setWatchPartyStream(null);
                 setWatchPartyHost(null);
                 setWatchPartyHostName('');
               }}
