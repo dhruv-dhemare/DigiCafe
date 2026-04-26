@@ -260,6 +260,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
   gap: 1rem;
 }
 
@@ -377,6 +378,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
   gap: 1rem;
 }
 
@@ -526,6 +528,7 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
   gap: 1rem;
 }
 
@@ -654,6 +657,28 @@
 .control-btn.end-call:hover {
   background: #dc2626;
   transform: scale(1.05);
+}
+
+.start-call-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0.875rem 2rem;
+  background: linear-gradient(90deg, var(--gradient-start), var(--gradient-mid));
+  border: none;
+  border-radius: 12px;
+  color: white;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px var(--glow);
+}
+
+.start-call-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px var(--glow);
 }
 
 /* ===== Responsive Design ===== */

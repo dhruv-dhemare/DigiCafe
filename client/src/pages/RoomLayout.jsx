@@ -530,9 +530,13 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       {/* Main Content Area */}
       <main className="room-main">
         <div className="room-content">
-          {activeTab === 'chat' && <ChatView onSendMessage={sendMessage} userName={userName} connectedPeers={connectedPeers} />}
-          {activeTab === 'files' && <FilesView />}
-          {activeTab === 'video' && (
+          <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: '100%', width: '100%', flex: 1 }}>
+            <ChatView onSendMessage={sendMessage} userName={userName} connectedPeers={connectedPeers} />
+          </div>
+          <div style={{ display: activeTab === 'files' ? 'flex' : 'none', height: '100%', width: '100%', flex: 1 }}>
+            <FilesView />
+          </div>
+          <div style={{ display: activeTab === 'video' ? 'flex' : 'none', height: '100%', width: '100%', flex: 1 }}>
             <VideoView 
               localStream={localStream}
               remotePeers={remotePeers}
@@ -544,7 +548,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
               onToggleAudio={toggleAudio}
               onToggleVideo={toggleVideo}
             />
-          )}
+          </div>
         </div>
       </main>
     </div>
@@ -931,8 +935,8 @@ function VideoView({
 
       <div className="video-controls">
         {!localStream ? (
-          <button className="control-btn start-call" onClick={onStartMedia} aria-label="Start video">
-            <Video size={20} /> Start
+          <button className="start-call-btn" onClick={onStartMedia} aria-label="Start video">
+            <Video size={20} /> Start Video
           </button>
         ) : (
           <>
