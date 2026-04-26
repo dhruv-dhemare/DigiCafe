@@ -5,6 +5,7 @@ class MultiPeerManager {
   constructor() {
     this.peers = new Map() // peerId -> { connection, dataChannels, remoteStream, userName }
     this.localStream = null
+    this.watchPartyStream = null
     this.listeners = {}
     this.iceCandidateQueue = new Map() // peerId -> [candidates]
     this._receivingFiles = new Map() // fileId -> fileData
@@ -347,6 +348,8 @@ class MultiPeerManager {
         // Emit specific events based on message type
         if (message.type === 'text') {
           this.emit('text_message', { peerId, text: message.text })
+        } else if (message.type === 'WATCH_PARTY_STATE') {
+          this.emit('watch_party_state', { peerId, ...message })
         }
       } catch (error) {
         console.error(`Error parsing message from ${peerId}:`, error)
@@ -438,6 +441,76 @@ class MultiPeerManager {
       })
       this.localStream = null
     }
+  }
+
+  // Watch Party: Start screen share
+  async getDisplayMedia() {
+    try {
+      this.watchPartyStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+      
+      // Add tracks to all existing peer connections
+      this.peers.forEach((peerData) => {
+        if (peerData.connection) {
+          this.watchPartyStream.getTracks().forEach(track => {
+            peerData.watchPartySenders = peerData.watchPartySenders || [];
+            const sender = peerData.connection.addTrack(track, this.watchPartyStream);
+            peerData.watchPartySenders.push(sender);
+          });
+        }
+      });
+      
+      // Handle native stop (e.g. Chrome's "Stop Sharing" button)
+      const videoTrack = this.watchPartyStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          this.stopWatchPartyStream();
+        };
+      }
+      
+      // Broadcast state
+      this.broadcastWatchPartyState({ isHosting: true, streamId: this.watchPartyStream.id });
+
+      return this.watchPartyStream;
+    } catch (error) {
+      console.error('Failed to get display media for watch party:', error);
+      throw error;
+    }
+  }
+
+  // Watch Party: Stop screen share
+  stopWatchPartyStream() {
+    if (this.watchPartyStream) {
+      this.watchPartyStream.getTracks().forEach(track => {
+        track.stop();
+      });
+      
+      this.peers.forEach((peerData) => {
+        if (peerData.connection && peerData.watchPartySenders) {
+          peerData.watchPartySenders.forEach(sender => {
+            try {
+              peerData.connection.removeTrack(sender);
+            } catch (e) {
+              console.warn("Could not remove watch party track", e);
+            }
+          });
+          peerData.watchPartySenders = [];
+        }
+      });
+      
+      this.watchPartyStream = null;
+      this.broadcastWatchPartyState({ isHosting: false });
+      this.emit('watch_party_stopped_local');
+    }
+  }
+
+  // Watch Party: Broadcast state to peers
+  broadcastWatchPartyState(state) {
+    this.peers.forEach((peerData, peerId) => {
+      this.sendMessage(peerId, 'chat', { type: 'WATCH_PARTY_STATE', ...state });
+    });
   }
 
   // Send file to all peers or specific peer

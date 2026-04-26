@@ -1,6 +1,6 @@
-# BifrostMesh
+# DigiCafe
 
-BifrostMesh is a real-time, multi-user WebRTC application that allows users to instantly create and join rooms for group video calls, real-time messaging, and high-speed peer-to-peer file sharing.
+DigiCafe is a real-time, multi-user WebRTC application that allows users to instantly create and join rooms for group video calls, real-time messaging, and high-speed peer-to-peer file sharing.
 
 ## Features
 
@@ -26,7 +26,7 @@ BifrostMesh is a real-time, multi-user WebRTC application that allows users to i
 
 1. Clone the repository
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/dhruv-dhemare/WebRTC_BiFrost
 cd WEBRTC
 ```
 

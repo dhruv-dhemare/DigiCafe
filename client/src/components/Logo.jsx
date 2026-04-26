@@ -7,7 +7,7 @@ export default function Logo({ variant = 'large' }) {
         <Globe size={24} />
       </div>
       <div className="logo-text">
-        Bifrost<span>Mesh</span>
+        Digi<span>Cafe</span>
       </div>
     </div>
   )

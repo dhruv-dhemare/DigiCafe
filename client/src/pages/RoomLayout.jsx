@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Menu, X, Copy, MessageSquare, FileUp, Video, ArrowLeft, Check, Upload, File, Download, Mic, Camera, Users, Smile } from 'lucide-react'
 import EmojiPicker from 'emoji-picker-react'
 import Logo from '../components/Logo'
+import WatchPartyView from '../components/WatchPartyView'
 import '../styles/room.css'
 import ws from '../services/websocket'
 import multiPeerManager from '../services/multiPeerManager'
@@ -25,6 +26,12 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
   const [unreadChatCount, setUnreadChatCount] = useState(0)
   const [unreadFilesCount, setUnreadFilesCount] = useState(0)
   const [hasNewVideoUser, setHasNewVideoUser] = useState(false)
+
+  // Watch Party states
+  const [watchPartyHost, setWatchPartyHost] = useState(null)
+  const [watchPartyHostName, setWatchPartyHostName] = useState('')
+  const [watchPartyStream, setWatchPartyStream] = useState(null)
+  const watchPartyStreamIdRef = useRef(null)
 
   // Sync activeTab ref and reset notifications on tab change
   useEffect(() => {
@@ -220,13 +227,26 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
 
     const handleRemoteStream = (data) => {
       console.log(`🎥 Remote stream received from ${data.userName}`)
-      if (activeTabRef.current !== 'video') {
-        setHasNewVideoUser(true)
+      
+      if (watchPartyStreamIdRef.current === data.stream.id || watchPartyHost === data.peerId) {
+        setWatchPartyStream(data.stream);
+        setRemotePeers(prev => {
+          const newMap = new Map(prev);
+          const existing = newMap.get(data.peerId) || { userName: data.userName };
+          newMap.set(data.peerId, { ...existing, watchPartyStream: data.stream });
+          return newMap;
+        });
+      } else {
+        if (activeTabRef.current !== 'video') {
+          setHasNewVideoUser(true)
+        }
+        setRemotePeers(prev => {
+          const newMap = new Map(prev)
+          const existing = newMap.get(data.peerId) || { userName: data.userName }
+          newMap.set(data.peerId, { ...existing, stream: data.stream })
+          return newMap
+        });
       }
-      setRemotePeers(prev => new Map(prev).set(data.peerId, {
-        stream: data.stream,
-        userName: data.userName
-      }))
     }
 
     const handleConnectionStateChange = (data) => {
@@ -279,8 +299,45 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       }
     }
 
+    const handleWatchPartyState = (data) => {
+      if (data.isHosting) {
+        setWatchPartyHost(data.peerId);
+        watchPartyStreamIdRef.current = data.streamId;
+        
+        // Find name
+        setConnectedPeers(peers => {
+          const peer = peers.get(data.peerId);
+          if (peer) setWatchPartyHostName(peer.userName);
+          return peers;
+        });
+        
+        // If stream arrived earlier, assign it now
+        setRemotePeers(prev => {
+          const peerData = prev.get(data.peerId);
+          if (peerData && peerData.watchPartyStream) {
+            setWatchPartyStream(peerData.watchPartyStream);
+          } else if (peerData && peerData.stream && peerData.stream.id === data.streamId) {
+            setWatchPartyStream(peerData.stream);
+          }
+          return prev;
+        });
+      } else {
+        setWatchPartyHost(null);
+        setWatchPartyHostName('');
+        setWatchPartyStream(null);
+        watchPartyStreamIdRef.current = null;
+      }
+    }
+
     multiPeerManager.on('text_message', handleTextMessageNotification)
     multiPeerManager.on('file_received', handleFileNotification)
+    multiPeerManager.on('watch_party_state', handleWatchPartyState)
+    multiPeerManager.on('watch_party_stopped_local', () => {
+      setWatchPartyHost(null);
+      setWatchPartyHostName('');
+      setWatchPartyStream(null);
+      watchPartyStreamIdRef.current = null;
+    })
 
     // 3. Connection logic
     const initWebSocket = async () => {
@@ -337,6 +394,7 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
       
       multiPeerManager.off('text_message', handleTextMessageNotification)
       multiPeerManager.off('file_received', handleFileNotification)
+      multiPeerManager.off('watch_party_state', handleWatchPartyState)
       
       multiPeerManager.closeAll()
       if (ws.isConnected()) {
@@ -563,6 +621,19 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
             </span>
             <span className="tab-label">Video</span>
           </button>
+          <button
+            className={`tab-button ${activeTab === 'watch-party' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTab('watch-party')
+              setIsSidebarOpen(false)
+            }}
+            aria-label="Watch Party tab"
+          >
+            <span className="tab-icon">
+              <MonitorPlay size={20} />
+            </span>
+            <span className="tab-label">Watch Party</span>
+          </button>
         </nav>
 
         {/* Sidebar Footer */}
@@ -575,10 +646,41 @@ export default function RoomLayout({ roomCode, isCreator, userName, setRoomCode,
 
       {/* Main Content Area */}
       <main className="room-main">
-        <div className="room-content">
-          <div style={{ display: activeTab === 'chat' ? 'flex' : 'none', height: '100%', width: '100%', flex: 1 }}>
+        <div className="room-content" style={{ flexDirection: activeTab === 'watch-party' ? 'row' : 'column' }}>
+          
+          <div style={{ display: activeTab === 'watch-party' ? 'flex' : 'none', height: '100%', flex: 1 }}>
+            <WatchPartyView 
+              isHosting={myClientId === watchPartyHost}
+              hostId={watchPartyHost}
+              hostName={watchPartyHostName}
+              watchPartyStream={watchPartyStream}
+              onStartParty={async () => {
+                try {
+                  await multiPeerManager.getDisplayMedia();
+                  setWatchPartyHost(myClientId);
+                  setWatchPartyHostName(userName);
+                } catch (e) {
+                  console.log("Screen share cancelled or failed", e);
+                }
+              }}
+              onStopParty={() => {
+                multiPeerManager.stopWatchPartyStream();
+                setWatchPartyHost(null);
+                setWatchPartyHostName('');
+              }}
+            />
+          </div>
+
+          <div style={{ 
+            display: (activeTab === 'chat' || activeTab === 'watch-party') ? 'flex' : 'none', 
+            height: '100%', 
+            width: activeTab === 'watch-party' ? '350px' : '100%', 
+            borderLeft: activeTab === 'watch-party' ? '1px solid var(--border-color)' : 'none',
+            flex: activeTab === 'watch-party' ? 'none' : 1 
+          }}>
             <ChatView onSendMessage={sendMessage} userName={userName} connectedPeers={connectedPeers} />
           </div>
+
           <div style={{ display: activeTab === 'files' ? 'flex' : 'none', height: '100%', width: '100%', flex: 1 }}>
             <FilesView />
           </div>
